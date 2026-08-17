@@ -41,7 +41,7 @@ async function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
 // ---------- Step 1: log in and capture an authenticated API context ----------
 async function loginAndGetSession(){
   const browser = await chromium.launch({ headless: true });
-  const context = await browser.newContext();
+  const context = await browser.newContext({ ignoreHTTPSErrors: true, viewport: { width: 1280, height: 720 } });
   const page = await context.newPage();
 
   log('Opening lotswholesale.com...');
@@ -63,30 +63,36 @@ async function loginAndGetSession(){
   }
 
   // Open login modal
-  const loginLink = await page.$('a.Header__AuthButton-is5do3-6');
-  if(loginLink) await loginLink.click(); else await page.click('text=Login').catch(()=>{});
-  await sleep(1200);
+  await page.click('a.Header__AuthButton-is5do3-6', { timeout: 8000 });
+  await page.waitForSelector('#inputPhoneLoginModal', { timeout: 10000 });
 
   // Fill mobile number via React-safe setter + dispatch events
   await page.evaluate((mobile) => {
     const input = document.querySelector('#inputPhoneLoginModal');
+    if(!input) throw new Error('mobile input not found');
     const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
     setter.call(input, mobile);
     input.dispatchEvent(new Event('input', { bubbles: true }));
   }, LOTS_USERNAME);
   await sleep(400);
-  await page.mouse.click(1206, 567).catch(()=>{});
-  await sleep(1200);
+  // The "continue" control is a plain <img alt="Next"> — a stable selector,
+  // not screen coordinates (which shift between environments/viewports).
+  await page.click('img[alt="Next"]', { timeout: 8000 });
+  // Wait for the password field to actually render rather than a fixed delay —
+  // this step is the one most sensitive to slow network/render timing.
+  await page.waitForSelector('#inputPassword, input[type=password]', { timeout: 15000 });
 
   await page.evaluate((pwd) => {
     const input = document.querySelector('#inputPassword') || document.querySelector('input[type=password]');
+    if(!input) throw new Error('password input not found');
     const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
     setter.call(input, pwd);
     input.dispatchEvent(new Event('input', { bubbles: true }));
   }, LOTS_PASSWORD);
   await sleep(400);
-  await page.mouse.click(1206, 561).catch(()=>{});
-  await sleep(2500);
+  // The password step submits via a real <button type="submit"> inside the login form.
+  await page.click('#login-form button[type=submit]', { timeout: 8000 }).catch(()=>{});
+  await sleep(3000);
 
   // Pull tokens from localStorage (same session shape used by the site itself)
   const authState = await page.evaluate(() => {
@@ -96,31 +102,19 @@ async function loginAndGetSession(){
       out[k] = localStorage.getItem(k);
     }
     return out;
-  });
+  }).catch(() => ({}));
   const cookies = await context.cookies();
 
-  // Also grab the homepage's category tree (window.__NEXT_DATA__)
+  // Also grab the homepage's category tree (window.__NEXT_DATA__) — reload the
+  // homepage fresh so we're reading it post-login, from a settled page.
+  await page.goto('https://www.lotswholesale.com/', { waitUntil: 'domcontentloaded', timeout: 60000 }).catch(()=>{});
+  await sleep(1500);
   const nextData = await page.evaluate(() => window.__NEXT_DATA__ || null);
 
   await browser.close();
   return { authState, cookies, nextData };
 }
 
-function extractAccessToken(authState){
-  for(const key of Object.keys(authState)){
-    if(/token/i.test(key)){
-      try{
-        const val = JSON.parse(authState[key]);
-        if(val && val.accessToken) return val.accessToken;
-      }catch(e){
-        if(typeof authState[key] === 'string' && authState[key].length > 20 && !authState[key].includes('{')) {
-          // plausibly a raw token string
-        }
-      }
-    }
-  }
-  return null;
-}
 
 function walkCategories(node, out){
   if(!node) return out;
@@ -134,7 +128,10 @@ function walkCategories(node, out){
 }
 
 // ---------- Step 2: pull every product's slab pricing ----------
-async function fetchCategoryProducts(cookieHeader, accessToken, menuId){
+// Confirmed by testing directly against the API: only the session cookies are
+// needed here. Sending an Authorization header actually causes a 401 — the
+// site's own frontend doesn't send one for this endpoint either.
+async function fetchCategoryProducts(cookieHeader, menuId){
   const body = {
     menuId,
     locale: 'en_US',
@@ -164,7 +161,6 @@ async function fetchCategoryProducts(cookieHeader, accessToken, menuId){
           headers: {
             'Content-Type': 'application/json',
             'Cookie': cookieHeader,
-            ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
           },
           body: JSON.stringify(body),
         });
@@ -210,8 +206,21 @@ async function main(){
   log(`Loaded ${catalogCodes.size} known product codes from your billing app.`);
 
   log('Logging into LOTS Wholesale...');
-  const { authState, cookies, nextData } = await loginAndGetSession();
-  const accessToken = extractAccessToken(authState);
+  let cookies, nextData;
+  for(let attempt = 1; attempt <= 3; attempt++){
+    try{
+      ({ cookies, nextData } = await loginAndGetSession());
+      if(cookies.some(c => c.name === 'accessToken')) break;
+      log(`  login attempt ${attempt} did not produce a session, retrying...`);
+    }catch(e){
+      log(`  login attempt ${attempt} failed: ${e.message}, retrying...`);
+    }
+    await sleep(3000);
+  }
+  if(!cookies || !cookies.some(c => c.name === 'accessToken')){
+    console.error('Could not log into LOTS after 3 attempts — the site may have changed its login flow, or the credentials were rejected.');
+    process.exit(1);
+  }
   const cookieHeader = cookies.map(c => `${c.name}=${c.value}`).join('; ');
 
   let categories = [];
@@ -233,7 +242,7 @@ async function main(){
     const cat = categories[i];
     let products = [];
     try{
-      products = await fetchCategoryProducts(cookieHeader, accessToken, cat.id);
+      products = await fetchCategoryProducts(cookieHeader, cat.id);
     }catch(e){
       log(`  category ${cat.name} (${cat.id}) failed, skipping:`, e.message);
       continue;
