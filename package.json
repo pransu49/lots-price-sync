@@ -1,0 +1,13 @@
+{
+  "name": "lots-price-sync",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Daily LOTS Wholesale price sync into Sasta Store Counter Billing (Firebase).",
+  "scripts": {
+    "sync": "node sync.js"
+  },
+  "dependencies": {
+    "playwright": "^1.47.0",
+    "firebase-admin": "^12.5.0"
+  }
+}
