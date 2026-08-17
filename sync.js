@@ -269,11 +269,16 @@ async function main(){
   }
 
   // ---------- Step 5: write to Firestore ----------
+  // The service account JSON already embeds its own project_id — passing a
+  // second, separate FIREBASE_PROJECT_ID here caused a mismatch (even a
+  // stray space from copy-pasting breaks it) and Firestore silently targeted
+  // a project that doesn't exist, surfacing as a confusing NOT_FOUND. The
+  // credential alone is authoritative and sufficient.
   const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
   admin.initializeApp({
     credential: admin.credential.cert(serviceAccount),
-    projectId: process.env.FIREBASE_PROJECT_ID,
   });
+  log(`Writing to Firestore project: ${serviceAccount.project_id}`);
   const db = admin.firestore();
   const kvRef = db.collection('shops').doc(SHOP_ID).collection('kv');
 
