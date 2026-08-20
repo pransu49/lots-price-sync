@@ -1,27 +1,34 @@
 /**
- * Daily LOTS Wholesale price sync -> Firebase (Sasta Store Counter Billing).
+ * Daily LOTS Wholesale price sync -> Firebase.
+ * Feeds TWO tools from one login/scrape:
  *
- * What it does, every time it runs:
- *  1. Logs into lotswholesale.com (Playwright, headless).
- *  2. Walks the full category tree and pulls every product's slab pricing.
- *  3. Keeps only products that are already in your billing app's catalog
- *     (catalog-codes.json — the same list your app already knows about).
- *  4. Computes:
- *       - tier prices  = exactly what LOTS shows (no markup)
- *       - sale price   = last available tier price x 1.08 (your 8% margin)
+ *  1) Sasta Store Counter Billing (Firestore: shops/{SHOP_ID}/kv/*)
+ *     - Only products already in your billing app's catalog (catalog-codes.json)
+ *     - tier prices  = exactly what LOTS shows (no markup)
+ *     - sale price   = last available tier price x 1.08 (your 8% margin)
  *     This matches the "Sync LOTS Prices" button in the app exactly.
- *  5. Writes the results straight into Firestore, at the same path your
- *     app's Cloud Sync already reads from: shops/{SHOP_ID}/kv/{key}
- *     keys written: price-overrides, slab-overrides, lots-raw-cost
+ *
+ *  2) AIKM Order Mapper / Admin Console (Firestore: aikm_admin/lotsCatalog)
+ *     - ALL LOTS products (not just ones in the billing app)
+ *     - raw LOTS cost, no markup — this tool uses it for order matching, not sale pricing
+ *     - Only runs if AIKM_FIREBASE_SERVICE_ACCOUNT is set; skipped otherwise.
  *
  * Required environment variables (set as GitHub Actions secrets — see
  * SETUP.md):
  *   LOTS_USERNAME              e.g. 7409111555
  *   LOTS_PASSWORD              e.g. Sasta@1008
- *   FIREBASE_SERVICE_ACCOUNT   full JSON of a Firebase service account key (single line)
+ *   FIREBASE_SERVICE_ACCOUNT   full JSON of a Firebase service account key for Sasta Store POS (single line)
  *   FIREBASE_PROJECT_ID        e.g. sasta-store-xxxxx
  *   SHOP_ID                    the Shop ID shown in the app's Cloud Sync panel
  *   MARGIN                     optional, defaults to 1.08 (8%)
+ *   AIKM_FIREBASE_SERVICE_ACCOUNT   optional — full JSON of a service account key
+ *                                    for the AIKM- ORDER FILE project. If not set,
+ *                                    the Order Mapper sync step is skipped entirely.
+ *   GREENAPI_INSTANCE_ID        optional — from green-api.com, see SETUP.md
+ *   GREENAPI_API_TOKEN          optional — from green-api.com, see SETUP.md
+ *   GREENAPI_CHAT_ID            optional — your number as 917409111555@c.us
+ *                                    If any of these three is missing, WhatsApp
+ *                                    notification is skipped.
  */
 
 const { chromium } = require('playwright');
@@ -236,6 +243,7 @@ async function main(){
   const priceOverrides = {};
   const slabOverrides = {};
   const lotsRawCost = {};
+  const aikmProducts = []; // full raw catalog for the Order Mapper tool — ALL LOTS products, not just ones in the billing app
   let matchedCount = 0;
 
   for(let i = 0; i < categories.length; i++){
@@ -249,37 +257,58 @@ async function main(){
     }
     for(const p of products){
       const code = String(p.productCode || '').trim();
-      if(!code || !catalogCodes.has(code)) continue; // only sync products already in the billing app
+      if(!code) continue;
       const slabs = buildSlabsFromPricingRecords(p.pricingRecords);
       if(!slabs.length) continue;
       const rawCost = slabs[slabs.length - 1][1];
-      const salePrice = Math.round(rawCost * MARGIN * 100) / 100;
-      slabOverrides[code] = slabs;               // exactly as LOTS lists them
-      priceOverrides[code] = salePrice;           // last tier + margin
-      lotsRawCost[code] = rawCost;
-      matchedCount++;
+
+      // Order Mapper (AIKM Admin Console) wants ALL products, raw LOTS cost,
+      // in its own {min,max,price} slab shape — not the billing app's format.
+      const aikmSlabs = slabs.map(([label, price]) => {
+        const m = label.match(/^(\d+)\+$/) || label.match(/^(\d+)-(\d+)$/) || label.match(/^(\d+)$/);
+        let min, max;
+        if(label.endsWith('+')){ min = parseInt(m[1],10); max = Infinity; }
+        else if(m && m[2] !== undefined){ min = parseInt(m[1],10); max = parseInt(m[2],10); }
+        else { min = parseInt(m[1],10); max = min; }
+        return { min, max, price };
+      });
+      const aikmProduct = { code, name: p.productName || '' };
+      if(p.brand) aikmProduct.brand = p.brand;
+      const mrp = p.pricingRecords && p.pricingRecords[0] ? p.pricingRecords[0].mrp : null;
+      if(mrp != null) aikmProduct.mrp = mrp;
+      if(aikmSlabs.length) aikmProduct.slabs = aikmSlabs;
+      aikmProducts.push(aikmProduct);
+
+      // Billing app only wants products it already knows about, marked up.
+      if(catalogCodes.has(code)){
+        const salePrice = Math.round(rawCost * MARGIN * 100) / 100;
+        slabOverrides[code] = slabs;               // exactly as LOTS lists them
+        priceOverrides[code] = salePrice;           // last tier + margin
+        lotsRawCost[code] = rawCost;
+        matchedCount++;
+      }
     }
-    if(i % 20 === 0) log(`  scanned ${i}/${categories.length} categories, matched ${matchedCount} products so far...`);
+    if(i % 20 === 0) log(`  scanned ${i}/${categories.length} categories, matched ${matchedCount} billing-app products, ${aikmProducts.length} total so far...`);
   }
 
-  log(`Done scanning. Matched ${matchedCount} products with pricing.`);
+  log(`Done scanning. Matched ${matchedCount} billing-app products; ${aikmProducts.length} total products for Order Mapper.`);
   if(matchedCount === 0){
     console.error('No products matched — aborting without writing to Firebase (safety check).');
     process.exit(1);
   }
 
-  // ---------- Step 5: write to Firestore ----------
+  // ---------- Step 5: write to Firestore (Sasta Store Counter Billing) ----------
   // The service account JSON already embeds its own project_id — passing a
   // second, separate FIREBASE_PROJECT_ID here caused a mismatch (even a
   // stray space from copy-pasting breaks it) and Firestore silently targeted
   // a project that doesn't exist, surfacing as a confusing NOT_FOUND. The
   // credential alone is authoritative and sufficient.
   const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-  admin.initializeApp({
+  const billingApp = admin.initializeApp({
     credential: admin.credential.cert(serviceAccount),
-  });
+  }, 'billing');
   log(`Writing to Firestore project: ${serviceAccount.project_id}`);
-  const db = admin.firestore();
+  const db = billingApp.firestore();
   const kvRef = db.collection('shops').doc(SHOP_ID).collection('kv');
 
   await kvRef.doc('price-overrides').set({ v: JSON.stringify(priceOverrides) });
@@ -288,9 +317,87 @@ async function main(){
 
   log(`Wrote price-overrides, slab-overrides, lots-raw-cost for ${matchedCount} products to shops/${SHOP_ID}/kv.`);
   log('Every open device with Cloud Sync on will pick this up automatically.');
+
+  // ---------- Step 6: write to Firestore (AIKM Order Mapper) ----------
+  let aikmCount = 0;
+  let aikmSkipped = true;
+  if(process.env.AIKM_FIREBASE_SERVICE_ACCOUNT){
+    aikmSkipped = false;
+    const aikmServiceAccount = JSON.parse(process.env.AIKM_FIREBASE_SERVICE_ACCOUNT);
+    const aikmApp = admin.initializeApp({
+      credential: admin.credential.cert(aikmServiceAccount),
+    }, 'aikm');
+    log(`Writing to Firestore project: ${aikmServiceAccount.project_id}`);
+    const aikmDb = aikmApp.firestore();
+
+    const savedAt = new Date().toISOString();
+    let payload = { products: aikmProducts, fileLabel: 'Daily auto-sync', savedAt };
+    let sizeKB = Math.round(JSON.stringify(payload).length / 1024);
+    // Mirrors the tool's own safety fallback: if the full catalog (with slab
+    // pricing) would push past Firestore's ~1MB document cap, drop pricing
+    // and keep just enough for the tool to still match products by name/code.
+    if(sizeKB > 900){
+      const lean = aikmProducts.map(p => {
+        const o = { code: p.code, name: p.name };
+        if(p.brand) o.brand = p.brand;
+        return o;
+      });
+      payload = { products: lean, fileLabel: 'Daily auto-sync', savedAt, pricingOmitted: true };
+      sizeKB = Math.round(JSON.stringify(payload).length / 1024);
+      log(`  Full catalog was too large (>900KB) — synced without slab pricing instead (${sizeKB}KB).`);
+    }
+    await aikmDb.collection('aikm_admin').doc('lotsCatalog').set(payload);
+    log(`Wrote ${aikmProducts.length} products (${sizeKB}KB) to aikm_admin/lotsCatalog.`);
+    aikmCount = aikmProducts.length;
+  } else {
+    log('AIKM_FIREBASE_SERVICE_ACCOUNT not set — skipping Order Mapper sync.');
+  }
+
+  return { matchedCount, aikmCount, aikmSkipped };
 }
 
-main().catch(err => {
-  console.error('Sync failed:', err);
-  process.exit(1);
-});
+// ---------- Notifications ----------
+// Uses Green-API (green-api.com) — a hosted WhatsApp API with a genuinely
+// usable free "Developer" tier. Unlike CallMeBot's shared bot number, this
+// links YOUR OWN WhatsApp (via a one-time QR scan) as the sender, so it's
+// not sharing a number with thousands of other users. Setup is in SETUP.md.
+// Skipped entirely if the required env vars aren't set.
+async function sendWhatsApp(message){
+  const instanceId = process.env.GREENAPI_INSTANCE_ID;
+  const apiToken = process.env.GREENAPI_API_TOKEN;
+  const chatId = process.env.GREENAPI_CHAT_ID; // e.g. 917409111555@c.us
+  if(!instanceId || !apiToken || !chatId){
+    log('WhatsApp notification skipped (GREENAPI_INSTANCE_ID/GREENAPI_API_TOKEN/GREENAPI_CHAT_ID not set).');
+    return;
+  }
+  try{
+    const url = `https://api.green-api.com/waInstance${instanceId}/sendMessage/${apiToken}`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chatId, message }),
+    });
+    log(`WhatsApp notification sent (status ${res.status}).`);
+  }catch(e){
+    log(`WhatsApp notification failed to send: ${e.message}`);
+  }
+}
+
+main()
+  .then(async (summary) => {
+    await sendWhatsApp(
+      `✅ LOTS price sync completed.\n` +
+      `Billing app: ${summary.matchedCount} products updated.\n` +
+      `Order Mapper: ${summary.aikmSkipped ? 'skipped' : summary.aikmCount + ' products updated'}.`
+    );
+    // Firestore keeps background gRPC connections open, which stops Node from
+    // exiting on its own — without this, the process just hangs after all
+    // the real work is done, until GitHub's job timeout force-kills it.
+    log('Done. Exiting.');
+    process.exit(0);
+  })
+  .catch(async (err) => {
+    console.error('Sync failed:', err);
+    await sendWhatsApp(`❌ LOTS price sync FAILED: ${err.message}`);
+    process.exit(1);
+  });
