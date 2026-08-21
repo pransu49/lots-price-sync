@@ -69,9 +69,12 @@ async function loginAndGetSession(){
     tries++;
   }
 
-  // Open login modal
-  await page.click('a.Header__AuthButton-is5do3-6', { timeout: 8000 });
-  await page.waitForSelector('#inputPhoneLoginModal', { timeout: 10000 });
+  // Open login modal — GitHub's runners can be slower than local testing, so this
+  // waits generously for the link to actually be there before clicking, rather
+  // than assuming the site changed just because one attempt was slow.
+  await page.waitForSelector('a.Header__AuthButton-is5do3-6', { timeout: 20000 });
+  await page.click('a.Header__AuthButton-is5do3-6', { timeout: 20000 });
+  await page.waitForSelector('#inputPhoneLoginModal', { timeout: 15000 });
 
   // Fill mobile number via React-safe setter + dispatch events
   await page.evaluate((mobile) => {
@@ -84,7 +87,7 @@ async function loginAndGetSession(){
   await sleep(400);
   // The "continue" control is a plain <img alt="Next"> — a stable selector,
   // not screen coordinates (which shift between environments/viewports).
-  await page.click('img[alt="Next"]', { timeout: 8000 });
+  await page.click('img[alt="Next"]', { timeout: 15000 });
   // Wait for the password field to actually render rather than a fixed delay —
   // this step is the one most sensitive to slow network/render timing.
   await page.waitForSelector('#inputPassword, input[type=password]', { timeout: 15000 });
@@ -98,7 +101,7 @@ async function loginAndGetSession(){
   }, LOTS_PASSWORD);
   await sleep(400);
   // The password step submits via a real <button type="submit"> inside the login form.
-  await page.click('#login-form button[type=submit]', { timeout: 8000 }).catch(()=>{});
+  await page.click('#login-form button[type=submit]', { timeout: 15000 }).catch(()=>{});
   await sleep(3000);
 
   // Pull tokens from localStorage (same session shape used by the site itself)
