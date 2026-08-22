@@ -15,8 +15,8 @@
  *
  * Required environment variables (set as GitHub Actions secrets — see
  * SETUP.md):
- *   LOTS_USERNAME              e.g. 7409111555
- *   LOTS_PASSWORD              e.g. Sasta@1008
+ *   LOTS_USERNAME              e.g. 919999999999
+ *   LOTS_PASSWORD              e.g. YourPassword123
  *   FIREBASE_SERVICE_ACCOUNT   full JSON of a Firebase service account key for Sasta Store POS (single line)
  *   FIREBASE_PROJECT_ID        e.g. sasta-store-xxxxx
  *   SHOP_ID                    the Shop ID shown in the app's Cloud Sync panel
@@ -26,7 +26,7 @@
  *                                    the Order Mapper sync step is skipped entirely.
  *   GREENAPI_INSTANCE_ID        optional — from green-api.com, see SETUP.md
  *   GREENAPI_API_TOKEN          optional — from green-api.com, see SETUP.md
- *   GREENAPI_CHAT_ID            optional — your number as 917409111555@c.us
+ *   GREENAPI_CHAT_ID            optional — your number as 919999999999@c.us
  *                                    If any of these three is missing, WhatsApp
  *                                    notification is skipped.
  */
@@ -368,7 +368,7 @@ async function main(){
 async function sendWhatsApp(message){
   const instanceId = process.env.GREENAPI_INSTANCE_ID;
   const apiToken = process.env.GREENAPI_API_TOKEN;
-  const chatId = process.env.GREENAPI_CHAT_ID; // e.g. 917409111555@c.us
+  const chatId = process.env.GREENAPI_CHAT_ID; // e.g. 919999999999@c.us
   if(!instanceId || !apiToken || !chatId){
     log('WhatsApp notification skipped (GREENAPI_INSTANCE_ID/GREENAPI_API_TOKEN/GREENAPI_CHAT_ID not set).');
     return;
