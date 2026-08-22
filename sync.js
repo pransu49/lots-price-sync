@@ -276,11 +276,14 @@ async function main(){
         return { min, max, price };
       });
       const aikmProduct = { code, name: p.productName || '' };
-      // brand/mrp dropped from this payload deliberately — with them included the
-      // full catalog (6700+ products x up to 4 slabs each) runs to ~1091KB, over
-      // Firestore's 1MB hard document cap. Without them it's ~906KB — comfortably
-      // under, with real slab pricing intact (the part that actually matters for
-      // matching/order value). Brand and MRP were only ever soft UI hints.
+      // Now that the catalog is split into small chunks (see Step 6 below), the
+      // per-document size ceiling that forced dropping these earlier no longer
+      // applies — restored, since they genuinely help: brand strengthens the
+      // matching engine's confidence scoring, and MRP feeds the "· MRP ₹X" hint
+      // shown next to matches in the app.
+      if(p.brand) aikmProduct.brand = p.brand;
+      const mrp = p.pricingRecords && p.pricingRecords[0] ? p.pricingRecords[0].mrp : null;
+      if(mrp != null) aikmProduct.mrp = mrp;
       if(aikmSlabs.length) aikmProduct.slabs = aikmSlabs;
       aikmProducts.push(aikmProduct);
 
@@ -341,7 +344,13 @@ async function main(){
     const aikmDb = aikmApp.firestore();
     const savedAt = new Date().toISOString();
 
-    const CHUNK_SIZE = 800; // ~130KB/chunk with full slab pricing at current catalog size — wide safety margin under the 1MB cap, room to grow a lot before this ever needs revisiting
+    // Match the site's own chunking exactly — its manual-upload fallback path
+    // (pushLotsCatalogToCloud in the theme JS) already writes chunks the same way,
+    // under the same collection, with the same "chunk_N" ID scheme and the same
+    // metadata field names. Staying identical means either write path — this daily
+    // automation, or someone manually uploading a file as a one-off fallback —
+    // produces data the site reads exactly the same way.
+    const CHUNK_SIZE = 400;
     const chunks = [];
     for(let i = 0; i < aikmProducts.length; i += CHUNK_SIZE){
       chunks.push(aikmProducts.slice(i, i + CHUNK_SIZE));
@@ -352,28 +361,28 @@ async function main(){
     // Remove any leftover chunks from a previous run that had more chunks than this
     // one (e.g. catalog shrank) — otherwise stale product data would linger forever.
     const existing = await chunksRef.listDocuments();
-    const keepIds = new Set(chunks.map((_, i) => String(i)));
+    const keepIds = new Set(chunks.map((_, i) => `chunk_${i}`));
     await Promise.all(existing.filter(d => !keepIds.has(d.id)).map(d => d.delete()));
 
-    // Firestore batches cap at 500 writes — chunk counts here are small (single
-    // digits) so one batch is always enough, but this stays correct even if the
-    // catalog grows to hundreds of chunks.
+    // Firestore batches cap at 500 writes — chunk counts here are small (under 20 at
+    // current catalog size) so one batch is always enough, but this stays correct
+    // even if the catalog grows to hundreds of chunks.
     for(let i = 0; i < chunks.length; i += 500){
       const batch = aikmDb.batch();
       chunks.slice(i, i + 500).forEach((productsSlice, offset) => {
         const idx = i + offset;
-        batch.set(chunksRef.doc(String(idx)), { products: productsSlice });
+        batch.set(chunksRef.doc(`chunk_${idx}`), { products: productsSlice });
       });
       await batch.commit();
     }
 
-    // Parent doc holds only metadata — small, fast to read, tells the app how many
-    // chunks to expect and when this was last updated.
+    // Parent doc holds only metadata — matches the field names the site's own
+    // upload path already writes (fileLabel, savedAt, productCount, chunkCount).
     await aikmDb.collection('aikm_admin').doc('lotsCatalog').set({
       fileLabel: 'Daily auto-sync',
       savedAt,
+      productCount: aikmProducts.length,
       chunkCount: chunks.length,
-      totalProducts: aikmProducts.length,
     });
 
     log(`Wrote ${aikmProducts.length} products across ${chunks.length} chunk(s) to aikm_admin/lotsCatalog.`);
