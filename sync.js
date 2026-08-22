@@ -276,9 +276,11 @@ async function main(){
         return { min, max, price };
       });
       const aikmProduct = { code, name: p.productName || '' };
-      if(p.brand) aikmProduct.brand = p.brand;
-      const mrp = p.pricingRecords && p.pricingRecords[0] ? p.pricingRecords[0].mrp : null;
-      if(mrp != null) aikmProduct.mrp = mrp;
+      // brand/mrp dropped from this payload deliberately — with them included the
+      // full catalog (6700+ products x up to 4 slabs each) runs to ~1091KB, over
+      // Firestore's 1MB hard document cap. Without them it's ~906KB — comfortably
+      // under, with real slab pricing intact (the part that actually matters for
+      // matching/order value). Brand and MRP were only ever soft UI hints.
       if(aikmSlabs.length) aikmProduct.slabs = aikmSlabs;
       aikmProducts.push(aikmProduct);
 
@@ -322,6 +324,11 @@ async function main(){
   log('Every open device with Cloud Sync on will pick this up automatically.');
 
   // ---------- Step 6: write to Firestore (AIKM Order Mapper) ----------
+  // Split across multiple small documents in a "chunks" subcollection instead of one
+  // big document — this is the exact same pattern this app already uses successfully
+  // for OMS orders (aikm_admin/omsOrders + its chunks subcollection). It permanently
+  // removes Firestore's ~1MB single-document cap as a concern, no matter how large
+  // LOTS's catalog grows in the future — no more guessing at a byte threshold.
   let aikmCount = 0;
   let aikmSkipped = true;
   if(process.env.AIKM_FIREBASE_SERVICE_ACCOUNT){
@@ -332,25 +339,44 @@ async function main(){
     }, 'aikm');
     log(`Writing to Firestore project: ${aikmServiceAccount.project_id}`);
     const aikmDb = aikmApp.firestore();
-
     const savedAt = new Date().toISOString();
-    let payload = { products: aikmProducts, fileLabel: 'Daily auto-sync', savedAt };
-    let sizeKB = Math.round(JSON.stringify(payload).length / 1024);
-    // Mirrors the tool's own safety fallback: if the full catalog (with slab
-    // pricing) would push past Firestore's ~1MB document cap, drop pricing
-    // and keep just enough for the tool to still match products by name/code.
-    if(sizeKB > 900){
-      const lean = aikmProducts.map(p => {
-        const o = { code: p.code, name: p.name };
-        if(p.brand) o.brand = p.brand;
-        return o;
-      });
-      payload = { products: lean, fileLabel: 'Daily auto-sync', savedAt, pricingOmitted: true };
-      sizeKB = Math.round(JSON.stringify(payload).length / 1024);
-      log(`  Full catalog was too large (>900KB) — synced without slab pricing instead (${sizeKB}KB).`);
+
+    const CHUNK_SIZE = 800; // ~130KB/chunk with full slab pricing at current catalog size — wide safety margin under the 1MB cap, room to grow a lot before this ever needs revisiting
+    const chunks = [];
+    for(let i = 0; i < aikmProducts.length; i += CHUNK_SIZE){
+      chunks.push(aikmProducts.slice(i, i + CHUNK_SIZE));
     }
-    await aikmDb.collection('aikm_admin').doc('lotsCatalog').set(payload);
-    log(`Wrote ${aikmProducts.length} products (${sizeKB}KB) to aikm_admin/lotsCatalog.`);
+
+    const chunksRef = aikmDb.collection('aikm_admin').doc('lotsCatalog').collection('chunks');
+
+    // Remove any leftover chunks from a previous run that had more chunks than this
+    // one (e.g. catalog shrank) — otherwise stale product data would linger forever.
+    const existing = await chunksRef.listDocuments();
+    const keepIds = new Set(chunks.map((_, i) => String(i)));
+    await Promise.all(existing.filter(d => !keepIds.has(d.id)).map(d => d.delete()));
+
+    // Firestore batches cap at 500 writes — chunk counts here are small (single
+    // digits) so one batch is always enough, but this stays correct even if the
+    // catalog grows to hundreds of chunks.
+    for(let i = 0; i < chunks.length; i += 500){
+      const batch = aikmDb.batch();
+      chunks.slice(i, i + 500).forEach((productsSlice, offset) => {
+        const idx = i + offset;
+        batch.set(chunksRef.doc(String(idx)), { products: productsSlice });
+      });
+      await batch.commit();
+    }
+
+    // Parent doc holds only metadata — small, fast to read, tells the app how many
+    // chunks to expect and when this was last updated.
+    await aikmDb.collection('aikm_admin').doc('lotsCatalog').set({
+      fileLabel: 'Daily auto-sync',
+      savedAt,
+      chunkCount: chunks.length,
+      totalProducts: aikmProducts.length,
+    });
+
+    log(`Wrote ${aikmProducts.length} products across ${chunks.length} chunk(s) to aikm_admin/lotsCatalog.`);
     aikmCount = aikmProducts.length;
   } else {
     log('AIKM_FIREBASE_SERVICE_ACCOUNT not set — skipping Order Mapper sync.');
