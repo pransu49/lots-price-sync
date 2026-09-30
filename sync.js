@@ -270,11 +270,6 @@ async function main(){
       log(`  category ${cat.name} (${cat.id}) failed, skipping:`, e.message);
       continue;
     }
-    if(i === 0 && products[0] && !globalThis.__lotsDumped){
-      globalThis.__lotsDumped = true;
-      const s = JSON.stringify(products[0]);
-      log('SAMPLE_PRODUCT_JSON ' + s.slice(0, 6000));
-    }
     for(const p of products){
       const code = String(p.productCode || '').trim();
       if(!code) continue;
@@ -302,6 +297,8 @@ async function main(){
       const mrp = p.pricingRecords && p.pricingRecords[0] ? p.pricingRecords[0].mrp : null;
       if(mrp != null) aikmProduct.mrp = mrp;
       if(aikmSlabs.length) aikmProduct.slabs = aikmSlabs;
+      // Available stock at LOTS (store 106) at the time of this sync
+      if(p.stockAvailableToSell != null) aikmProduct.qty = Number(p.stockAvailableToSell);
       const im = itemMaster[code];
       if(im){
         if(im.b) aikmProduct.barcode = im.b;
@@ -324,6 +321,8 @@ async function main(){
     if(i % 20 === 0) log(`  scanned ${i}/${categories.length} categories, matched ${matchedCount} billing-app products, ${aikmProducts.length} total so far...`);
   }
 
+  log(`Stock qty captured for ${aikmProducts.filter(x => x.qty != null).length} products.`);
+  const syncedAtIso = new Date().toISOString();
   log(`Done scanning. Matched ${matchedCount} billing-app products; ${aikmProducts.length} total products for Order Mapper.`);
   log(`Barcode/GST/HSN attached to ${masterHits} of ${aikmProducts.length} LOTS products.`);
   if(matchedCount === 0){
