@@ -270,6 +270,11 @@ async function main(){
       log(`  category ${cat.name} (${cat.id}) failed, skipping:`, e.message);
       continue;
     }
+    if(i === 0 && products[0] && !globalThis.__lotsDumped){
+      globalThis.__lotsDumped = true;
+      const s = JSON.stringify(products[0]);
+      log('SAMPLE_PRODUCT_JSON ' + s.slice(0, 6000));
+    }
     for(const p of products){
       const code = String(p.productCode || '').trim();
       if(!code) continue;
