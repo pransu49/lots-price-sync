@@ -302,6 +302,7 @@ async function main(){
         if(im.b) aikmProduct.barcode = im.b;
         if(im.g != null) aikmProduct.gst = im.g;
         if(im.h) aikmProduct.hsn = im.h;
+        if(!aikmProduct.brand && im.br) aikmProduct.brand = im.br;
         masterHits++;
       }
       aikmProducts.push(aikmProduct);
