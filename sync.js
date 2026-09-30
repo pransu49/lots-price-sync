@@ -215,6 +215,18 @@ async function main(){
   );
   log(`Loaded ${catalogCodes.size} known product codes from your billing app.`);
 
+  // Barcode / GST % / HSN come from LOTS's own "Item Extract" file (not the website),
+  // converted into lots-item-master.json — keyed by the same SKU / product code.
+  // To refresh: send Claude a new Item Extract file and it regenerates this JSON.
+  let itemMaster = {};
+  try{
+    itemMaster = JSON.parse(fs.readFileSync(path.join(__dirname, 'lots-item-master.json'), 'utf8'));
+    log(`Loaded ${Object.keys(itemMaster).length} barcode/GST/HSN records from lots-item-master.json.`);
+  }catch(e){
+    log('lots-item-master.json not found — barcode/GST/HSN will be skipped.');
+  }
+  let masterHits = 0;
+
   log('Logging into LOTS Wholesale...');
   let cookies, nextData;
   for(let attempt = 1; attempt <= 3; attempt++){
@@ -285,6 +297,13 @@ async function main(){
       const mrp = p.pricingRecords && p.pricingRecords[0] ? p.pricingRecords[0].mrp : null;
       if(mrp != null) aikmProduct.mrp = mrp;
       if(aikmSlabs.length) aikmProduct.slabs = aikmSlabs;
+      const im = itemMaster[code];
+      if(im){
+        if(im.b) aikmProduct.barcode = im.b;
+        if(im.g != null) aikmProduct.gst = im.g;
+        if(im.h) aikmProduct.hsn = im.h;
+        masterHits++;
+      }
       aikmProducts.push(aikmProduct);
 
       // Billing app only wants products it already knows about, marked up.
@@ -300,6 +319,7 @@ async function main(){
   }
 
   log(`Done scanning. Matched ${matchedCount} billing-app products; ${aikmProducts.length} total products for Order Mapper.`);
+  log(`Barcode/GST/HSN attached to ${masterHits} of ${aikmProducts.length} LOTS products.`);
   if(matchedCount === 0){
     console.error('No products matched — aborting without writing to Firebase (safety check).');
     process.exit(1);
