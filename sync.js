@@ -322,7 +322,6 @@ async function main(){
   }
 
   log(`Stock qty captured for ${aikmProducts.filter(x => x.qty != null).length} products.`);
-  const syncedAtIso = new Date().toISOString();
   log(`Done scanning. Matched ${matchedCount} billing-app products; ${aikmProducts.length} total products for Order Mapper.`);
   log(`Barcode/GST/HSN attached to ${masterHits} of ${aikmProducts.length} LOTS products.`);
   if(matchedCount === 0){
