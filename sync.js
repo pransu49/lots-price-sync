@@ -374,6 +374,34 @@ async function main(){
     // metadata field names. Staying identical means either write path — this daily
     // automation, or someone manually uploading a file as a one-off fallback —
     // produces data the site reads exactly the same way.
+    // ---- Price-change tracking ----
+    // Compare each product's best (lowest) slab price with the previous sync's
+    // data already in Firestore. A change is stamped with prevPrice + priceChangedAt;
+    // unchanged products carry their last change forward so history isn't lost.
+    try{
+      const prevSnap = await aikmDb.collection('aikm_admin').doc('lotsCatalog').collection('chunks').get();
+      const prevByCode = {};
+      prevSnap.forEach(d => (d.data().products || []).forEach(p => { prevByCode[p.code] = p; }));
+      const bestOf = x => (x && x.slabs && x.slabs.length) ? Math.min(...x.slabs.map(s => Number(s.price))) : null;
+      let up = 0, down = 0;
+      for(const p of aikmProducts){
+        const old = prevByCode[p.code];
+        if(!old) continue;
+        const now = bestOf(p), before = bestOf(old);
+        if(now != null && before != null && Math.abs(now - before) >= 0.01){
+          p.prevPrice = before;
+          p.priceChangedAt = savedAt;
+          now > before ? up++ : down++;
+        }else if(old.priceChangedAt){
+          p.prevPrice = old.prevPrice;
+          p.priceChangedAt = old.priceChangedAt;
+        }
+      }
+      log(`Price changes vs last sync: ${up} up, ${down} down.`);
+    }catch(e){
+      log('Price-change check skipped: ' + e.message);
+    }
+
     const CHUNK_SIZE = 400;
     const chunks = [];
     for(let i = 0; i < aikmProducts.length; i += CHUNK_SIZE){
