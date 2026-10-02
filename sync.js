@@ -408,8 +408,56 @@ async function main(){
         }
       }
       log(`Price changes vs last sync: ${up} up, ${down} down.`);
+
+      // ---- New / removed products ----
+      // "Seen" registry = every product code LOTS has ever listed (with first-seen date).
+      // New     = not in the registry before this sync.
+      // Removed = in the previous sync but missing now (kept for 7 days in lotsRemoved).
+      const KEEP_MS = 7 * 24 * 60 * 60 * 1000;
+      const seenRef = aikmDb.collection('aikm_admin').doc('lotsSeen');
+      const removedRef = aikmDb.collection('aikm_admin').doc('lotsRemoved');
+      const seenSnap = await seenRef.get();
+      let seen = seenSnap.exists ? (seenSnap.data().c || {}) : null;
+      if(!seen){
+        // first run: treat everything already in the catalog as known, so nothing is falsely "new"
+        seen = {};
+        Object.keys(prevByCode).forEach(c => { seen[c] = savedAt; });
+        log(`Seen-registry created from previous catalog (${Object.keys(seen).length} codes).`);
+      }
+      const nowCodes = new Set(aikmProducts.map(x => x.code));
+      let added = 0;
+      for(const p of aikmProducts){
+        const old = prevByCode[p.code];
+        if(!seen[p.code]){
+          seen[p.code] = savedAt;
+          p.addedAt = savedAt;
+          added++;
+        }else if(old && old.addedAt){
+          p.addedAt = old.addedAt;   // keep the "new" stamp for its 7-day window
+        }
+      }
+      const removedSnap = await removedRef.get();
+      let removed = removedSnap.exists ? (removedSnap.data().items || []) : [];
+      const gone = Object.keys(prevByCode).filter(c => !nowCodes.has(c));
+      const prevCount = Object.keys(prevByCode).length;
+      if(prevCount && gone.length > prevCount * 0.10){
+        // more than 10% vanished at once = almost certainly a LOTS site/scrape hiccup, not real removals
+        log(`WARNING: ${gone.length} products missing vs last sync (over 10%) - not marking them as removed.`);
+      }else{
+        gone.forEach(c => {
+          const o = Object.assign({}, prevByCode[c]);
+          delete o.prevPrice; delete o.priceChangedAt; delete o.addedAt;
+          o.removedAt = savedAt;
+          removed.push(o);
+        });
+      }
+      const cutoff = Date.now() - KEEP_MS;
+      removed = removed.filter(r => !nowCodes.has(r.code) && new Date(r.removedAt).getTime() >= cutoff).slice(-500);
+      await seenRef.set({ c: seen, updatedAt: savedAt });
+      await removedRef.set({ items: removed, updatedAt: savedAt });
+      log(`New products this sync: ${added}. Removed this sync: ${gone.length}. Removed list (7 days): ${removed.length}.`);
     }catch(e){
-      log('Price-change check skipped: ' + e.message);
+      log('Price/new/removed check skipped: ' + e.message);
     }
 
     const CHUNK_SIZE = 400;
