@@ -330,6 +330,7 @@ async function main(){
     if(i % 20 === 0) log(`  scanned ${i}/${categories.length} categories, matched ${matchedCount} billing-app products, ${aikmProducts.length} total so far...`);
   }
 
+  { const want = new Set(["104546853", "104474421", "103668435", "103668956", "103666453", "103666853", "103666854", "104470012", "104470024", "100065119", "103666363", "103668962"]); aikmProducts.filter(x => want.has(x.code)).forEach(x => log('IMGURL ' + x.code + ' ' + (x.img || ''))); }
   log(`Images captured for ${aikmProducts.filter(x => x.img).length} products.`);
   log(`Stock qty captured for ${aikmProducts.filter(x => x.qty != null).length} products.`);
   log(`Done scanning. Matched ${matchedCount} billing-app products; ${aikmProducts.length} total products for Order Mapper.`);
