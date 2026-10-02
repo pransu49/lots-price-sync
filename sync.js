@@ -297,6 +297,18 @@ async function main(){
       const mrp = p.pricingRecords && p.pricingRecords[0] ? p.pricingRecords[0].mrp : null;
       if(mrp != null) aikmProduct.mrp = mrp;
       if(aikmSlabs.length) aikmProduct.slabs = aikmSlabs;
+      // Product image (LOTS sends either "image" or an "images" list)
+      {
+        let img = p.image || (Array.isArray(p.images) && p.images.length ? p.images[0] : null);
+        if(img && typeof img === 'object') img = img.url || img.imageUrl || img.src || img.path || null;
+        if(img && typeof img === 'string'){
+          if(img.startsWith('//')) img = 'https:' + img;
+          aikmProduct.img = img;
+        }
+        if((p.image || (p.images && p.images.length)) && (globalThis.__imgSamples = (globalThis.__imgSamples || 0) + 1) <= 3){
+          log('IMG_SAMPLE ' + JSON.stringify({ image: p.image, images: (p.images || []).slice(0, 2) }).slice(0, 600));
+        }
+      }
       // Available stock at LOTS (store 106) at the time of this sync
       if(p.stockAvailableToSell != null) aikmProduct.qty = Number(p.stockAvailableToSell);
       const im = itemMaster[code];
@@ -321,6 +333,7 @@ async function main(){
     if(i % 20 === 0) log(`  scanned ${i}/${categories.length} categories, matched ${matchedCount} billing-app products, ${aikmProducts.length} total so far...`);
   }
 
+  log(`Images captured for ${aikmProducts.filter(x => x.img).length} products.`);
   log(`Stock qty captured for ${aikmProducts.filter(x => x.qty != null).length} products.`);
   log(`Done scanning. Matched ${matchedCount} billing-app products; ${aikmProducts.length} total products for Order Mapper.`);
   log(`Barcode/GST/HSN attached to ${masterHits} of ${aikmProducts.length} LOTS products.`);
