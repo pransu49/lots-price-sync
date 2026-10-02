@@ -305,9 +305,6 @@ async function main(){
           if(img.startsWith('//')) img = 'https:' + img;
           aikmProduct.img = img;
         }
-        if((p.image || (p.images && p.images.length)) && (globalThis.__imgSamples = (globalThis.__imgSamples || 0) + 1) <= 3){
-          log('IMG_SAMPLE ' + JSON.stringify({ image: p.image, images: (p.images || []).slice(0, 2) }).slice(0, 600));
-        }
       }
       // Available stock at LOTS (store 106) at the time of this sync
       if(p.stockAvailableToSell != null) aikmProduct.qty = Number(p.stockAvailableToSell);
