@@ -175,13 +175,15 @@ async function fetchCategoryProducts(cookieHeader, menuId){
           body: JSON.stringify(body),
         });
         data = await res.json();
+        if(!data || !Array.isArray(data.content)) throw new Error('no content (HTTP ' + res.status + ')');
         break;
       }catch(e){
+        data = null;
         attempt++;
-        await sleep(1000 + attempt * 500);
+        await sleep(1000 + attempt * 1500);
       }
     }
-    if(!data || !data.content) break;
+    if(!data || !data.content){ all.incomplete = true; break; }
     all.push(...data.content);
     totalPages = data.totalPages || 1;
     page++;
@@ -258,6 +260,8 @@ async function main(){
   const priceOverrides = {};
   const slabOverrides = {};
   const lotsRawCost = {};
+  const listedCodes = new Set();   // every code LOTS listed this run, even ones with no price right now
+  let incompleteCats = 0;
   const aikmProducts = []; // full raw catalog for the Order Mapper tool — ALL LOTS products, not just ones in the billing app
   let matchedCount = 0;
 
@@ -266,13 +270,16 @@ async function main(){
     let products = [];
     try{
       products = await fetchCategoryProducts(cookieHeader, cat.id);
+      if(products.incomplete){ incompleteCats++; log(`  category ${cat.name} (${cat.id}) only partly loaded - LOTS did not answer every page.`); }
     }catch(e){
+      incompleteCats++;
       log(`  category ${cat.name} (${cat.id}) failed, skipping:`, e.message);
       continue;
     }
     for(const p of products){
       const code = String(p.productCode || '').trim();
       if(!code) continue;
+      listedCodes.add(code);
       const slabs = buildSlabsFromPricingRecords(p.pricingRecords);
       if(!slabs.length) continue;
       const rawCost = slabs[slabs.length - 1][1];
@@ -438,24 +445,41 @@ async function main(){
       }
       const removedSnap = await removedRef.get();
       let removed = removedSnap.exists ? (removedSnap.data().items || []) : [];
-      const gone = Object.keys(prevByCode).filter(c => !nowCodes.has(c));
+      let pending = removedSnap.exists ? (removedSnap.data().pending || {}) : {};
+      const listedNow = c => nowCodes.has(c) || listedCodes.has(c);
+      const gone = Object.keys(prevByCode).filter(c => !listedNow(c));
       const prevCount = Object.keys(prevByCode).length;
-      if(prevCount && gone.length > prevCount * 0.10){
-        // more than 10% vanished at once = almost certainly a LOTS site/scrape hiccup, not real removals
+      let confirmed = [];
+      if(incompleteCats > 0){
+        log(`Removal check skipped: ${incompleteCats} categor${incompleteCats === 1 ? 'y' : 'ies'} did not load fully, so missing products can't be trusted.`);
+      }else if(prevCount && gone.length > prevCount * 0.10){
         log(`WARNING: ${gone.length} products missing vs last sync (over 10%) - not marking them as removed.`);
       }else{
-        gone.forEach(c => {
-          const o = Object.assign({}, prevByCode[c]);
-          delete o.prevPrice; delete o.priceChangedAt; delete o.addedAt;
-          o.removedAt = savedAt;
-          removed.push(o);
+        // Two-strike rule: a product must be missing on two syncs at least 12 hours apart before it counts as removed.
+        const TWELVE_H = 12 * 60 * 60 * 1000;
+        gone.forEach(c => { if(!pending[c]) pending[c] = { since: savedAt, item: prevByCode[c] }; });
+        Object.keys(pending).forEach(c => {
+          if(listedNow(c)){ delete pending[c]; return; }
+          if(Date.now() - new Date(pending[c].since).getTime() >= TWELVE_H){
+            const o = Object.assign({}, pending[c].item);
+            delete o.prevPrice; delete o.priceChangedAt; delete o.addedAt;
+            o.removedAt = savedAt;
+            removed.push(o); confirmed.push(o);
+            delete pending[c];
+          }
         });
       }
+      // anything LOTS lists again is no longer "removed"
+      Object.keys(pending).forEach(c => { if(listedNow(c)) delete pending[c]; });
       const cutoff = Date.now() - KEEP_MS;
-      removed = removed.filter(r => !nowCodes.has(r.code) && new Date(r.removedAt).getTime() >= cutoff).slice(-500);
+      removed = removed.filter(r => !listedNow(r.code) && new Date(r.removedAt).getTime() >= cutoff).slice(-500);
+      // keep pending small: drop entries whose product is still around in the removed list or older than 7 days
+      Object.keys(pending).forEach(c => { if(Date.now() - new Date(pending[c].since).getTime() > KEEP_MS) delete pending[c]; });
       await seenRef.set({ c: seen, updatedAt: savedAt });
-      await removedRef.set({ items: removed, updatedAt: savedAt });
-      log(`New products this sync: ${added}. Removed this sync: ${gone.length}. Removed list (7 days): ${removed.length}.`);
+      await removedRef.set({ items: removed, pending, updatedAt: savedAt });
+      if(gone.length) log('Missing this sync (waiting for 2nd check): ' + gone.map(c => c + ' ' + (prevByCode[c].name || '')).slice(0, 20).join(' | '));
+      if(confirmed.length) log('Confirmed removed: ' + confirmed.map(o => o.code + ' ' + (o.name || '')).slice(0, 20).join(' | '));
+      log(`New products this sync: ${added}. Missing this sync: ${gone.length}. Confirmed removed: ${confirmed.length}. Removed list (7 days): ${removed.length}. Waiting for 2nd check: ${Object.keys(pending).length}.`);
     }catch(e){
       log('Price/new/removed check skipped: ' + e.message);
     }
