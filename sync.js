@@ -416,6 +416,25 @@ async function main(){
       }
       log(`Price changes vs last sync: ${up} up, ${down} down.`);
 
+      // ---- Stock alerts ----
+      // went out of stock / back in stock / stock moved by 50+ units since the last sync.
+      // The latest alert is carried forward so the page can show it for 24 hours.
+      let sOos = 0, sBack = 0, sBig = 0;
+      for(const p of aikmProducts){
+        const old = prevByCode[p.code];
+        if(!old) continue;
+        const was = old.qty == null ? null : Number(old.qty), now = p.qty == null ? null : Number(p.qty);
+        let ev = null;
+        if(was != null && now != null){
+          if(was > 0 && now <= 0){ ev = 'oos'; sOos++; }
+          else if(was <= 0 && now > 0){ ev = 'back'; sBack++; }
+          else if(Math.abs(now - was) >= 50){ ev = now > was ? 'up' : 'down'; sBig++; }
+        }
+        if(ev) p.stockEvent = { type: ev, from: was, to: now, at: savedAt };
+        else if(old.stockEvent) p.stockEvent = old.stockEvent;
+      }
+      log(`Stock alerts vs last sync: ${sOos} went out of stock, ${sBack} back in stock, ${sBig} changed by 50+.`);
+
       // ---- New / removed products ----
       // "Seen" registry = every product code LOTS has ever listed (with first-seen date).
       // New     = not in the registry before this sync.
