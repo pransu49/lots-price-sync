@@ -2,11 +2,16 @@ name: Daily LOTS Price Sync
 
 on:
   schedule:
-    # Runs at 03:00 UTC = 8:30 AM IST, every day.
-    # Change the "0 3" below to move the time — cron is in UTC.
-    # (IST = UTC + 5:30, so 03:00 UTC = 08:30 IST)
-    - cron: '30 22 * * *'
+    # GitHub often starts scheduled jobs 1-3 hours late, so the sync runs twice a day.
+    # Times are UTC: 21:30 UTC = 3:00 AM IST, 06:30 UTC = 12:00 noon IST.
+    - cron: '30 21 * * *'
+    - cron: '30 6 * * *'
   workflow_dispatch: {} # lets you also click "Run workflow" manually on GitHub
+
+# never let two syncs run at the same time (e.g. a late scheduled run + a manual one)
+concurrency:
+  group: lots-price-sync
+  cancel-in-progress: false
 
 jobs:
   sync:
