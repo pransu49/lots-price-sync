@@ -123,24 +123,58 @@ function buildFile(items) {
   return XLSX.write(wb, { bookType: 'xlsx', type: 'buffer' });
 }
 
-async function uploadPart(session, items, fileName) {
-  const fd = new FormData();
-  fd.append('file', new Blob([buildFile(items)], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), fileName);
-  fd.append('locale', 'en_US');
-  const res = await fetch(`${API}/next-ocs-member/user/cart/uploadExcel`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${session.token}`, Cookie: session.cookieHeader, Origin: 'https://www.lotswholesale.com', Referer: 'https://www.lotswholesale.com/smartcart' },
-    body: fd,
+const norm = (c) => String(c == null ? '' : c).trim().replace(/^0+(?=\d)/, '');
+
+// Finds every cart line in any LOTS response shape (cart.cartChilds[].cartItems[], cartChilds, items...)
+function collectCart(obj) {
+  const out = {};
+  (function walk(o, inItems) {
+    if (!o || typeof o !== 'object') return;
+    if (Array.isArray(o)) return o.forEach((x) => walk(x, inItems));
+    if (inItems && o.productCode != null && (o.quantity != null || o.qty != null)) {
+      out[norm(o.productCode)] = Number(o.quantity != null ? o.quantity : o.qty) || 0;
+    }
+    Object.keys(o).forEach((k) => { if (k !== 'failedItems') walk(o[k], inItems || /cartItems|items|products|cartChilds/i.test(k)); });
+  })(obj, false);
+  return Object.keys(out).map((code) => ({ code, qty: out[code] }));
+}
+function collectFailed(obj) {
+  let list = [];
+  (function walk(o) {
+    if (!o || typeof o !== 'object') return;
+    if (Array.isArray(o)) return o.forEach(walk);
+    Object.keys(o).forEach((k) => { if (/failed/i.test(k) && Array.isArray(o[k])) list = list.concat(o[k]); else walk(o[k]); });
+  })(obj);
+  return list.map((f) => ({ code: norm(f.productCode || f.code || f.itemCode), reason: f.reason || f.message || f.failureReason || '' }));
+}
+
+async function lotsFetch(session, path, opts = {}) {
+  const res = await fetch(`${API}${path}`, {
+    ...opts,
+    headers: { Authorization: `Bearer ${session.token}`, Cookie: session.cookieHeader, Origin: 'https://www.lotswholesale.com', Referer: 'https://www.lotswholesale.com/smartcart', ...(opts.headers || {}) },
   });
   const text = await res.text();
   let json = null;
   try { json = JSON.parse(text); } catch (e) { /* not JSON */ }
+  return { res, text, json };
+}
+
+async function uploadPart(session, items, fileName) {
+  const fd = new FormData();
+  fd.append('file', new Blob([buildFile(items)], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), fileName);
+  fd.append('locale', 'en_US');
+  const { res, text, json } = await lotsFetch(session, '/next-ocs-member/user/cart/uploadExcel', { method: 'POST', body: fd });
+  log(`Upload response (HTTP ${res.status}): ${text.slice(0, 1500)}`);
   if (!res.ok || !json) throw new Error(`LOTS rejected the upload (HTTP ${res.status}): ${text.slice(0, 200)}`);
-  const data = json.data || {};
-  const childs = (data.cart && data.cart.cartChilds) || data.cartChilds || [];
-  const cart = [];
-  childs.forEach((ch) => (ch.cartItems || []).forEach((ci) => cart.push({ code: String(ci.productCode), qty: ci.quantity })));
-  return { failed: (data.failedItems || []).map((f) => ({ code: String(f.productCode), reason: f.reason || '' })), cart };
+  return { failed: collectFailed(json), cart: collectCart(json), raw: text.slice(0, 1500) };
+}
+
+// Reads the real LOTS cart (same call the LOTS cart page uses)
+async function readCart(session) {
+  const { res, text, json } = await lotsFetch(session, '/next-ocs-member/user/cart/v2?locale=en_US');
+  log(`Cart read (HTTP ${res.status}): ${text.slice(0, 600)}`);
+  if (!res.ok || !json) return null;
+  return collectCart(json);
 }
 
 async function processDoc(doc) {
@@ -157,7 +191,7 @@ async function processDoc(doc) {
   const req = doc.data();
   const items = (req.items || []).filter((it) => it && it.code && Number(it.qty) > 0);
   const nameOf = {};
-  items.forEach((it) => { nameOf[String(it.code).trim()] = it.name || ''; });
+  items.forEach((it) => { nameOf[String(it.code).trim()] = it.name || ''; nameOf[norm(it.code)] = it.name || ''; });
   log(`Request ${doc.id}: ${items.length} products`);
 
   try {
@@ -169,25 +203,30 @@ async function processDoc(doc) {
 
     const results = [];
     let lastCart = [];
+    let firstRaw = '';
     for (let p = 0; p < parts.length; p++) {
       const label = `Part ${p + 1} of ${parts.length}`;
       await ref.update({ progress: `Uploading ${label}…` });
       const r = await uploadPart(session, parts[p], `smart_cart_part${p + 1}.xlsx`);
       lastCart = r.cart;
+      if (p === 0) firstRaw = r.raw;
       results.push({ part: p + 1, sent: parts[p].length, failed: r.failed.length });
-      r.failed.forEach((f) => { f.name = nameOf[f.code] || ''; f.part = p + 1; });
+      r.failed.forEach((f) => { f.name = nameOf[f.code] || nameOf[norm(f.code)] || ''; f.part = p + 1; });
       results[p].failedItems = r.failed;
       log(`${label}: sent ${parts[p].length}, failed ${r.failed.length}, cart now ${r.cart.length} products`);
       if (p < parts.length - 1) await sleep(3000);
     }
 
+    await sleep(3000);
+    const realCart = await readCart(session).catch(() => null);
+    if (realCart && realCart.length >= lastCart.length) lastCart = realCart;
     const failedItems = results.flatMap((r) => r.failedItems);
-    const failedCodes = new Set(failedItems.map((f) => f.code));
-    const inCart = new Set(lastCart.map((c) => c.code));
+    const failedCodes = new Set(failedItems.map((f) => norm(f.code)));
+    const inCart = new Set(lastCart.map((c) => norm(c.code)));
     // safety check: every product that didn't fail should now be in the cart
     const missing = items
-      .filter((it) => !failedCodes.has(String(it.code).trim()) && !inCart.has(String(it.code).trim()))
-      .map((it) => ({ code: String(it.code).trim(), name: it.name || '', reason: 'Not found in LOTS cart after upload' }));
+      .filter((it) => !failedCodes.has(norm(it.code)) && !inCart.has(norm(it.code)))
+      .map((it) => ({ code: String(it.code).trim(), name: it.name || '', reason: 'Not in LOTS cart after upload (check stock / store availability)' }));
 
     await ref.update({
       status: 'done',
@@ -197,6 +236,7 @@ async function processDoc(doc) {
       addedCount: items.length - failedItems.length - missing.length,
       failedItems: failedItems.concat(missing),
       cartProductCount: lastCart.length,
+      lotsResponse: firstRaw,
       finishedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
     log(`Done: ${items.length - failedItems.length - missing.length} added, ${failedItems.length + missing.length} need attention, cart has ${lastCart.length} products.`);
@@ -206,7 +246,7 @@ async function processDoc(doc) {
   }
 }
 
-module.exports = { buildFile, uploadPart };
+module.exports = { buildFile, uploadPart, collectCart, collectFailed };
 if (require.main === module) (async () => {
   initDb();
   const docs = await pendingDocs();
