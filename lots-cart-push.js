@@ -198,10 +198,18 @@ async function processDoc(doc) {
   if (!claimed) return;
 
   const req = doc.data();
-  const items = (req.items || []).filter((it) => it && it.code && Number(it.qty) > 0);
-  const nameOf = {};
-  items.forEach((it) => { nameOf[String(it.code).trim()] = it.name || ''; nameOf[norm(it.code)] = it.name || ''; });
-  log(`Request ${doc.id}: ${items.length} products`);
+  // merge duplicate item codes (LOTS keeps one line per code): quantities are added together
+  const merged = new Map();
+  let duplicatesMerged = 0;
+  (req.items || []).filter((it) => it && it.code && Number(it.qty) > 0).forEach((it) => {
+    const k = norm(it.code);
+    if (merged.has(k)) { merged.get(k).qty += Number(it.qty); duplicatesMerged++; }
+    else merged.set(k, { code: String(it.code).trim(), name: it.name || '', qty: Number(it.qty) });
+  });
+  const items = Array.from(merged.values());
+  const nameOf = {}, qtyOf = {};
+  items.forEach((it) => { nameOf[norm(it.code)] = it.name; qtyOf[norm(it.code)] = it.qty; });
+  log(`Request ${doc.id}: ${items.length} products (${duplicatesMerged} duplicate lines merged)`);
 
   try {
     if (!items.length) throw new Error('No products with a LOTS item code and quantity.');
@@ -240,7 +248,7 @@ async function processDoc(doc) {
       lastCart = r.cart;
       if (p === 0) firstRaw = r.raw;
       results.push({ part: p + 1, sent: parts[p].length, failed: r.failed.length });
-      r.failed.forEach((f) => { f.name = nameOf[f.code] || nameOf[norm(f.code)] || ''; f.part = p + 1; });
+      r.failed.forEach((f) => { f.name = nameOf[norm(f.code)] || ''; f.qty = qtyOf[norm(f.code)] || 0; f.part = p + 1; });
       results[p].failedItems = r.failed;
       log(`${label}: sent ${parts[p].length}, failed ${r.failed.length}, cart now ${r.cart.length} products`);
       if (p < parts.length - 1) await sleep(3000);
@@ -248,28 +256,39 @@ async function processDoc(doc) {
 
     await sleep(3000);
     const realCart = await readCart(session).catch(() => null);
-    if (realCart && realCart.length >= lastCart.length) lastCart = realCart;
+    if (realCart) lastCart = realCart;
+    const cartQty = {};
+    lastCart.forEach((c) => { cartQty[norm(c.code)] = c.qty; });
     const failedItems = results.flatMap((r) => r.failedItems);
+    failedItems.forEach((f) => { f.cartQty = cartQty[norm(f.code)] || 0; });
     const failedCodes = new Set(failedItems.map((f) => norm(f.code)));
-    const inCart = new Set(lastCart.map((c) => norm(c.code)));
-    // safety check: every product that didn't fail should now be in the cart
-    const missing = items
-      .filter((it) => !failedCodes.has(norm(it.code)) && !inCart.has(norm(it.code)))
-      .map((it) => ({ code: String(it.code).trim(), name: it.name || '', reason: 'Not in LOTS cart after upload (check stock / store availability)' }));
+    // safety check: every product that didn't fail should be in the cart with the full quantity
+    const extra = [];
+    items.forEach((it) => {
+      const k = norm(it.code);
+      if (failedCodes.has(k)) return;
+      const have = cartQty[k];
+      if (have === undefined) extra.push({ code: it.code, name: it.name, qty: it.qty, cartQty: 0, reason: 'Not in LOTS cart after upload (check stock / store availability)' });
+      else if (have < it.qty) extra.push({ code: it.code, name: it.name, qty: it.qty, cartQty: have, reason: `Only ${have} of ${it.qty} in cart (LOTS limited the quantity)` });
+    });
+    const attention = failedItems.concat(extra);
+    const attentionCodes = new Set(attention.map((f) => norm(f.code)));
+    const addedCount = items.length - attentionCodes.size;
 
     await ref.update({
       status: 'done',
       progress: null,
       parts: results.map(({ failedItems: _, ...r }) => r),
       sentCount: items.length,
-      addedCount: items.length - failedItems.length - missing.length,
-      failedItems: failedItems.concat(missing),
+      addedCount,
+      duplicatesMerged,
+      failedItems: attention,
       cartProductCount: lastCart.length,
       clearedCount,
       lotsResponse: firstRaw,
       finishedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
-    log(`Done: ${items.length - failedItems.length - missing.length} added, ${failedItems.length + missing.length} need attention, cart has ${lastCart.length} products.`);
+    log(`Done: ${addedCount} added, ${attentionCodes.size} need attention, cart has ${lastCart.length} products.`);
   } catch (e) {
     log('FAILED:', e.message);
     await ref.update({ status: 'failed', progress: null, error: e.message || String(e), finishedAt: admin.firestore.FieldValue.serverTimestamp() });
