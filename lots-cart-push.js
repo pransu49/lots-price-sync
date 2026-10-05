@@ -169,6 +169,15 @@ async function uploadPart(session, items, fileName) {
   return { failed: collectFailed(json), cart: collectCart(json), raw: text.slice(0, 1500) };
 }
 
+// Empties the LOTS cart (same call as the cart page's "Clear cart")
+async function clearCart(session) {
+  const fd = new FormData();
+  fd.append('locale', 'en_US');
+  const { res, text } = await lotsFetch(session, '/next-ocs-member/user/cart/v2/clearCart', { method: 'POST', body: fd });
+  log(`Clear cart (HTTP ${res.status}): ${text.slice(0, 300)}`);
+  if (!res.ok) throw new Error(`LOTS did not clear the cart (HTTP ${res.status}).`);
+}
+
 // Reads the real LOTS cart (same call the LOTS cart page uses)
 async function readCart(session) {
   const { res, text, json } = await lotsFetch(session, '/next-ocs-member/user/cart/v2?locale=en_US');
@@ -198,6 +207,26 @@ async function processDoc(doc) {
     if (!items.length) throw new Error('No products with a LOTS item code and quantity.');
     const session = await login();
     log('Logged into LOTS.');
+
+    // Step 1: start from an empty cart (skipped when it's already empty)
+    await ref.update({ progress: 'Checking your LOTS cart…' });
+    const before = await readCart(session);
+    let clearedCount = 0;
+    if (before === null) {
+      throw new Error('Could not read your LOTS cart, so nothing was uploaded. Please try again.');
+    } else if (before.length) {
+      await ref.update({ progress: `Clearing ${before.length} old products from your LOTS cart…` });
+      await clearCart(session);
+      await sleep(2000);
+      const after = await readCart(session);
+      if (after === null || after.length) {
+        throw new Error(`Could not empty your LOTS cart (${after ? after.length : '?'} products still there), so nothing was uploaded. Clear it on LOTS and try again.`);
+      }
+      clearedCount = before.length;
+      log(`Cleared ${clearedCount} old products from the LOTS cart.`);
+    } else {
+      log('LOTS cart already empty — nothing to clear.');
+    }
     const parts = [];
     for (let i = 0; i < items.length; i += MAX_PER_FILE) parts.push(items.slice(i, i + MAX_PER_FILE));
 
@@ -236,6 +265,7 @@ async function processDoc(doc) {
       addedCount: items.length - failedItems.length - missing.length,
       failedItems: failedItems.concat(missing),
       cartProductCount: lastCart.length,
+      clearedCount,
       lotsResponse: firstRaw,
       finishedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
