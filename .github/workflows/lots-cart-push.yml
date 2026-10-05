@@ -1,0 +1,45 @@
+name: LOTS Smart Cart Push
+
+on:
+  schedule:
+    # every 5 minutes: checks if the Admin Console sent an order to LOTS
+    - cron: '*/5 * * * *'
+  workflow_dispatch: {} # "Run workflow" button for an instant push
+
+concurrency:
+  group: lots-cart-push
+  cancel-in-progress: false
+
+jobs:
+  push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Check for orders waiting
+        id: q
+        env:
+          AIKM_FIREBASE_SERVICE_ACCOUNT: ${{ secrets.AIKM_FIREBASE_SERVICE_ACCOUNT }}
+        run: node lots-cart-push.js check
+
+      - name: Install Playwright browser
+        if: steps.q.outputs.pending == 'true'
+        run: npx playwright install --with-deps chromium
+
+      - name: Upload to LOTS Smart Cart
+        if: steps.q.outputs.pending == 'true'
+        env:
+          LOTS_USERNAME: ${{ secrets.LOTS_USERNAME }}
+          LOTS_PASSWORD: ${{ secrets.LOTS_PASSWORD }}
+          AIKM_FIREBASE_SERVICE_ACCOUNT: ${{ secrets.AIKM_FIREBASE_SERVICE_ACCOUNT }}
+        run: node lots-cart-push.js
