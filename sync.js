@@ -126,14 +126,20 @@ async function loginAndGetSession(){
 }
 
 
-function walkCategories(node, out){
+function walkCategories(node, out, path){
   if(!node) return out;
+  const isRoot = !path;
+  path = path || [];
   const menus = node.childMenus || node.children || [];
+  const nm = node.name || node.menuName || '';
   if((!menus || !menus.length) && node.id != null){
-    out.push({ id: node.id, name: node.name || node.menuName || '' });
+    // dept = top-level department, name = leaf category (both used by the picking list PDF)
+    out.push({ id: node.id, name: nm, dept: path[0] || nm });
     return out;
   }
-  menus.forEach(child => walkCategories(child, out));
+  // the very top node is the menu root itself, not a department
+  const next = isRoot ? [] : (nm ? path.concat(nm) : path);
+  menus.forEach(child => walkCategories(child, out, next));
   return out;
 }
 
@@ -250,7 +256,7 @@ async function main(){
   let categories = [];
   try{
     const topMenu = nextData.props.pageProps.valueFromServer.topMenu;
-    categories = walkCategories(topMenu, []);
+    categories = Array.isArray(topMenu) ? topMenu.reduce((o, n) => walkCategories(n, o, []), []) : walkCategories(topMenu, []);
   }catch(e){
     console.error('Could not read category tree from homepage — LOTS may have changed their site layout.');
     process.exit(1);
@@ -295,6 +301,9 @@ async function main(){
         return { min, max, price };
       });
       const aikmProduct = { code, name: p.productName || '' };
+      // LOTS category (leaf) + department, for the picking list PDF
+      if(cat.name) aikmProduct.cat = cat.name;
+      if(cat.dept && cat.dept !== cat.name) aikmProduct.dept = cat.dept;
       // Now that the catalog is split into small chunks (see Step 6 below), the
       // per-document size ceiling that forced dropping these earlier no longer
       // applies — restored, since they genuinely help: brand strengthens the

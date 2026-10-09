@@ -148,6 +148,71 @@ function collectFailed(obj) {
   return list.map((f) => ({ code: norm(f.productCode || f.code || f.itemCode), reason: f.reason || f.message || f.failureReason || '' }));
 }
 
+// ---------- Full cart lines for the picking-list PDF (qty, price, coupon/offer, image) ----------
+const toNum = (v) => (v === '' || v == null || typeof v === 'boolean' || isNaN(Number(v)) ? null : Number(v));
+// every simple value inside an object, keyed by its path ("pricing.0.salePrice")
+function flatten(o, pre = '', out = {}, depth = 0) {
+  if (!o || typeof o !== 'object' || depth > 4) return out;
+  Object.keys(o).forEach((k) => {
+    const v = o[k], p = pre ? pre + '.' + k : k;
+    if (v && typeof v === 'object') flatten(v, p, out, depth + 1);
+    else if (v !== null && v !== undefined && v !== '') out[p] = v;
+  });
+  return out;
+}
+const leaf = (p) => p.split('.').filter((x) => !/^\d+$/.test(x)).pop() || '';
+function pickNum(f, tests) {
+  for (const re of tests) {
+    const k = Object.keys(f).find((p) => re.test(leaf(p)) && toNum(f[p]) != null && toNum(f[p]) > 0);
+    if (k) return toNum(f[k]);
+  }
+  return null;
+}
+function cartLinesRaw(obj) {
+  const out = {};
+  (function walk(o, inItems) {
+    if (!o || typeof o !== 'object') return;
+    if (Array.isArray(o)) return o.forEach((x) => walk(x, inItems));
+    if (inItems && o.productCode != null && (o.quantity != null || o.qty != null)) { out[norm(o.productCode)] = o; return; }
+    Object.keys(o).forEach((k) => { if (k !== 'failedItems') walk(o[k], inItems || /cartItems|items|products|cartChilds/i.test(k)); });
+  })(obj, false);
+  return out;
+}
+function lineInfo(o) {
+  const f = flatten(o);
+  const qty = toNum(o.quantity != null ? o.quantity : o.qty) || 0;
+  const price = pickNum(f, [/^(final|net|effective|discounted|offer|special)(unit)?price$/i, /^(selling|sale)(unit)?price$/i, /^unit(selling|sale)?price$/i, /^price$/i, /price$/i]);
+  const total = pickNum(f, [/^(final|net|line|item)?total(amount|price|value)?$/i, /^(net|final|line)?amount$/i, /^subtotal$/i]);
+  const mrp = pickNum(f, [/^mrp$/i, /maxretail/i, /mrp/i]);
+  const couponOff = pickNum(f, [/^(coupon|offer|promo|scheme)(discount)?(amount|value)?$/i, /coupon.*(amount|value|discount)/i, /^(total)?discount(amount|value)?$/i, /^saving(s)?(amount)?$/i]);
+  const texts = [];
+  Object.keys(f).forEach((p) => {
+    const v = f[p];
+    if (typeof v === 'string' && /coupon|offer|promo|scheme|deal/i.test(p) && !/id$|url|image|type$/i.test(leaf(p)) && v.length < 120 && !texts.includes(v)) texts.push(v);
+  });
+  let img = null;
+  Object.keys(f).some((p) => {
+    const v = f[p];
+    if (typeof v === 'string' && /image|img|thumb/i.test(p) && /\.(jpe?g|png|webp)|^https?:|^\/\//i.test(v)) { img = v.startsWith('//') ? 'https:' + v : v; return true; }
+    return false;
+  });
+  return {
+    code: String(o.productCode).trim(), name: o.productName || o.name || '', qty,
+    price, total: total || (price ? Math.round(price * qty * 100) / 100 : null), mrp,
+    coupon: texts.slice(0, 3).join(' · ') || null, couponOff, img,
+  };
+}
+// cart-level totals / coupons (outside the item lines)
+function cartSummary(obj) {
+  const f = flatten(Object.fromEntries(Object.entries(obj || {}).filter(([k]) => !/failedItems/i.test(k))));
+  const out = {};
+  Object.keys(f).forEach((p) => {
+    if (/cartItems|cartChilds\.\d+\.(items|products)/i.test(p)) return;
+    if (/total|discount|saving|coupon|payable|subtotal|grand|amount|offer/i.test(leaf(p)) && Object.keys(out).length < 30) out[p] = f[p];
+  });
+  return out;
+}
+
 async function lotsFetch(session, path, opts = {}) {
   const res = await fetch(`${API}${path}`, {
     ...opts,
@@ -179,10 +244,12 @@ async function clearCart(session) {
 }
 
 // Reads the real LOTS cart (same call the LOTS cart page uses)
+let lastCartJson = null;
 async function readCart(session) {
   const { res, text, json } = await lotsFetch(session, '/next-ocs-member/user/cart/v2?locale=en_US');
   log(`Cart read (HTTP ${res.status}): ${text.slice(0, 600)}`);
   if (!res.ok || !json) return null;
+  lastCartJson = json;
   return collectCart(json);
 }
 
@@ -255,8 +322,20 @@ async function processDoc(doc) {
     }
 
     await sleep(3000);
+    lastCartJson = null;
     const realCart = await readCart(session).catch(() => null);
     if (realCart) lastCart = realCart;
+    // full cart lines (qty, price, coupon/offer, image) for the picking-list PDF
+    let cartLines = [], cartSample = null, cartTotals = {};
+    if (realCart && lastCartJson) {
+      const raw = cartLinesRaw(lastCartJson);
+      cartLines = Object.values(raw).map(lineInfo).filter((l) => l.qty > 0);
+      const first = Object.values(raw)[0];
+      cartSample = first ? JSON.stringify(first).slice(0, 3000) : null;
+      cartTotals = cartSummary(lastCartJson);
+      log(`Captured ${cartLines.length} cart lines for the picking list. Sample line: ${cartSample ? cartSample.slice(0, 800) : '-'}`);
+      log(`Cart totals: ${JSON.stringify(cartTotals).slice(0, 800)}`);
+    }
     const cartQty = {};
     lastCart.forEach((c) => { cartQty[norm(c.code)] = c.qty; });
     const failedItems = results.flatMap((r) => r.failedItems);
@@ -284,6 +363,10 @@ async function processDoc(doc) {
       duplicatesMerged,
       failedItems: attention,
       cartProductCount: lastCart.length,
+      cartLines,
+      cartSample,
+      cartTotals,
+      cartReadAtMs: Date.now(),
       clearedCount,
       lotsResponse: firstRaw,
       finishedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -295,7 +378,7 @@ async function processDoc(doc) {
   }
 }
 
-module.exports = { buildFile, uploadPart, collectCart, collectFailed };
+module.exports = { buildFile, uploadPart, collectCart, collectFailed, cartLinesRaw, lineInfo, cartSummary };
 if (require.main === module) (async () => {
   initDb();
   const docs = await pendingDocs();
