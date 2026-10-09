@@ -265,6 +265,34 @@ async function processDoc(doc) {
   if (!claimed) return;
 
   const req = doc.data();
+
+  // "LOTS Cart PDF" button: only READ the cart (items you added yourself) — nothing is changed
+  if (req.type === 'readCart') {
+    try {
+      const session = await login();
+      log('Logged into LOTS (read-only cart request).');
+      await ref.update({ progress: 'Reading your LOTS cart…' });
+      lastCartJson = null;
+      const cart = await readCart(session);
+      if (cart === null || !lastCartJson) throw new Error('Could not read your LOTS cart. Please try again.');
+      const raw = cartLinesRaw(lastCartJson);
+      const cartLines = Object.values(raw).map(lineInfo).filter((l) => l.qty > 0);
+      const first = Object.values(raw)[0];
+      const cartSample = first ? JSON.stringify(first).slice(0, 3000) : null;
+      const cartTotals = cartSummary(lastCartJson);
+      log(`Read ${cartLines.length} cart lines. Sample line: ${cartSample ? cartSample.slice(0, 800) : '-'}`);
+      await ref.update({
+        status: 'done', progress: null, cartLines, cartSample, cartTotals,
+        cartProductCount: cart.length, cartReadAtMs: Date.now(),
+        finishedAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    } catch (e) {
+      log('FAILED:', e.message);
+      await ref.update({ status: 'failed', progress: null, error: e.message || String(e), finishedAt: admin.firestore.FieldValue.serverTimestamp() });
+    }
+    return;
+  }
+
   // merge duplicate item codes (LOTS keeps one line per code): quantities are added together
   const merged = new Map();
   let duplicatesMerged = 0;
