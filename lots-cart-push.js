@@ -407,9 +407,19 @@ async function processDoc(doc) {
 }
 
 module.exports = { buildFile, uploadPart, collectCart, collectFailed, cartLinesRaw, lineInfo, cartSummary };
+const isQuota = (e) => e && (e.code === 8 || /RESOURCE_EXHAUSTED|Quota exceeded/i.test(String(e.message || e)));
 if (require.main === module) (async () => {
   initDb();
-  const docs = await pendingDocs();
+  let docs;
+  try {
+    docs = await pendingDocs();
+  } catch (e) {
+    // Firebase free daily limit used up: skip quietly, try again on the next run (limit resets 12:30 PM IST)
+    if (!isQuota(e)) throw e;
+    console.log('Firebase daily read limit reached - skipping this run. It resets at 12:30 PM IST.');
+    if (process.argv[2] === 'check' && process.env.GITHUB_OUTPUT) fs.appendFileSync(process.env.GITHUB_OUTPUT, 'pending=false\n');
+    process.exit(0);
+  }
   if (process.argv[2] === 'check') {
     const line = `pending=${docs.length > 0}`;
     console.log(line, `(${docs.length} waiting)`);
