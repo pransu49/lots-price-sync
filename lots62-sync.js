@@ -40,7 +40,7 @@ function findUser(authState){
         if(key === 'assortpricestorecode' && !found.code) found.code = String(val);
         if(key === 'storecode' && !found.storeCode) found.storeCode = String(val);
         if((key === 'makromemberno' || key === 'makrono') && !found.makroNo) found.makroNo = String(val);
-        if((key === 'pincode' || key === 'zipcode' || key === 'postalcode') && !found.pincode && /^\d{6}$/.test(String(val))) found.pincode = String(val);
+        if((key === 'pincode' || key === 'zipcode' || key === 'registerzipcode' || key === 'postalcode') && !found.pincode && /^\d{6}$/.test(String(val))) found.pincode = String(val);
         if(key === 'storename' && !found.storeName) found.storeName = String(val);
       }
       walk(val, depth + 1);
