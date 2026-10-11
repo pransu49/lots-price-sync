@@ -23,6 +23,8 @@ const XLSX = require('xlsx');
 
 const API = process.env.LOTS_API || 'https://api.lotswholesale.com';
 const MAX_PER_FILE = 99;
+// LOTS cart holds at most 160 products — bigger orders go in batches (the rest waits for "Send next batch")
+const MAX_CART = Number(process.env.LOTS_MAX_CART || 160);
 const QUEUE = 'lotsCartQueue';
 
 function log(...a) { console.log(new Date().toISOString(), ...a); }
@@ -311,7 +313,13 @@ async function processDoc(doc) {
     if (merged.has(k)) { merged.get(k).qty += Number(it.qty); duplicatesMerged++; }
     else merged.set(k, { code: String(it.code).trim(), name: it.name || '', qty: Number(it.qty) });
   });
-  const items = Array.from(merged.values());
+  const allItems = Array.from(merged.values());
+  // batches: only the first 160 go into the cart now; the rest are saved on the request for the next batch
+  const items = allItems.slice(0, MAX_CART);
+  const remainingItems = allItems.slice(MAX_CART);
+  const batchNo = Number(req.batchNo) || 1;
+  const batchTotal = Number(req.batchTotal) || (batchNo - 1 + Math.ceil(allItems.length / MAX_CART));
+  if (remainingItems.length) log(`Batch ${batchNo} of ${batchTotal}: ${items.length} products now, ${remainingItems.length} wait for the next batch (LOTS cart limit ${MAX_CART}).`);
   const nameOf = {}, qtyOf = {};
   items.forEach((it) => { nameOf[norm(it.code)] = it.name; qtyOf[norm(it.code)] = it.qty; });
   log(`Request ${doc.id}: ${items.length} products (${duplicatesMerged} duplicate lines merged)`);
@@ -395,6 +403,10 @@ async function processDoc(doc) {
     await ref.update({
       status: 'done',
       progress: null,
+      batchNo,
+      batchTotal,
+      remainingItems,
+      remainingCount: remainingItems.length,
       parts: results.map(({ failedItems: _, ...r }) => r),
       sentCount: items.length,
       addedCount,
