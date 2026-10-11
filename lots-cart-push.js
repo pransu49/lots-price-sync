@@ -337,9 +337,15 @@ async function processDoc(doc) {
       throw new Error('Could not read your LOTS cart, so nothing was uploaded. Please try again.');
     } else if (before.length) {
       await ref.update({ progress: `Clearing ${before.length} old products from your LOTS cart…` });
-      await clearCart(session);
-      await sleep(2000);
-      const after = await readCart(session);
+      // LOTS sometimes times out (HTTP 504) while clearing — retry, and check if it actually cleared anyway
+      let after = null;
+      for (let t = 1; t <= 4; t++) {
+        try { await clearCart(session); } catch (e) { log(`Clear attempt ${t} failed: ${e.message}`); }
+        await sleep(3000 * t);
+        after = await readCart(session).catch(() => null);
+        if (after && !after.length) break;
+        log(`Cart not empty yet after clear attempt ${t} (${after ? after.length : '?'} products).`);
+      }
       if (after === null || after.length) {
         throw new Error(`Could not empty your LOTS cart (${after ? after.length : '?'} products still there), so nothing was uploaded. Clear it on LOTS and try again.`);
       }
