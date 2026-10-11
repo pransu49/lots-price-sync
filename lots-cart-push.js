@@ -43,7 +43,7 @@ async function pendingDocs() {
 }
 
 // ---------- LOTS login (same flow as the daily price sync) ----------
-async function loginAndGetToken() {
+async function loginAndGetToken(creds) {
   const { chromium } = require('playwright');
   const browser = await chromium.launch({ headless: true });
   try {
@@ -67,11 +67,11 @@ async function loginAndGetToken() {
       Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set.call(input, v);
       input.dispatchEvent(new Event('input', { bubbles: true }));
     }, [sel, val]);
-    await setVal('#inputPhoneLoginModal', process.env.LOTS_USERNAME);
+    await setVal('#inputPhoneLoginModal', creds.user);
     await sleep(400);
     await page.click('img[alt="Next"]', { timeout: 15000 });
     await page.waitForSelector('#inputPassword, input[type=password]', { timeout: 15000 });
-    await setVal('#inputPassword, input[type=password]', process.env.LOTS_PASSWORD);
+    await setVal('#inputPassword, input[type=password]', creds.pass);
     await sleep(400);
     await page.click('#login-form button[type=submit]', { timeout: 15000 }).catch(() => {});
     await sleep(4000);
@@ -97,10 +97,20 @@ async function loginAndGetToken() {
   }
 }
 
-async function login() {
+// which LOTS account to use: "lots62" = the LOTS 62 login, anything else = the main LOTS login
+function credsFor(store) {
+  if (store === 'lots62') {
+    if (!process.env.LOTS62_USERNAME || !process.env.LOTS62_PASSWORD) throw new Error('The LOTS 62 login is not saved in GitHub secrets (LOTS62_USERNAME / LOTS62_PASSWORD).');
+    return { user: process.env.LOTS62_USERNAME, pass: process.env.LOTS62_PASSWORD, label: 'LOTS 62' };
+  }
+  return { user: process.env.LOTS_USERNAME, pass: process.env.LOTS_PASSWORD, label: 'LOTS' };
+}
+
+async function login(store) {
+  const creds = credsFor(store);
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      const s = await loginAndGetToken();
+      const s = await loginAndGetToken(creds);
       if (s.token) return s;
       log(`Login attempt ${attempt}: no session token, retrying...`);
     } catch (e) {
@@ -108,7 +118,7 @@ async function login() {
     }
     await sleep(3000);
   }
-  throw new Error('Could not log into LOTS after 3 attempts (password changed, or LOTS changed its login page).');
+  throw new Error('Could not log into ' + creds.label + ' after 3 attempts (password changed, or LOTS changed its login page).');
 }
 
 // ---------- Smart Cart upload (same call as the website's "Upload File") ----------
@@ -269,8 +279,8 @@ async function processDoc(doc) {
   // "LOTS Cart PDF" button: only READ the cart (items you added yourself) — nothing is changed
   if (req.type === 'readCart') {
     try {
-      const session = await login();
-      log('Logged into LOTS (read-only cart request).');
+      const session = await login(req.store);
+      log(`Logged into ${req.store === 'lots62' ? 'LOTS 62' : 'LOTS'} (read-only cart request).`);
       await ref.update({ progress: 'Reading your LOTS cart…' });
       lastCartJson = null;
       const cart = await readCart(session);
@@ -308,8 +318,8 @@ async function processDoc(doc) {
 
   try {
     if (!items.length) throw new Error('No products with a LOTS item code and quantity.');
-    const session = await login();
-    log('Logged into LOTS.');
+    const session = await login(req.store);
+    log(`Logged into ${req.store === 'lots62' ? 'LOTS 62' : 'LOTS'}.`);
 
     // Step 1: start from an empty cart (skipped when it's already empty)
     await ref.update({ progress: 'Checking your LOTS cart…' });

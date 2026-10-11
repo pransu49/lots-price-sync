@@ -41,5 +41,7 @@ jobs:
         env:
           LOTS_USERNAME: ${{ secrets.LOTS_USERNAME }}
           LOTS_PASSWORD: ${{ secrets.LOTS_PASSWORD }}
+          LOTS62_USERNAME: ${{ secrets.LOTS62_USERNAME }}
+          LOTS62_PASSWORD: ${{ secrets.LOTS62_PASSWORD }}
           AIKM_FIREBASE_SERVICE_ACCOUNT: ${{ secrets.AIKM_FIREBASE_SERVICE_ACCOUNT }}
         run: node lots-cart-push.js
