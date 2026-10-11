@@ -74,7 +74,25 @@ async function main(){
   if(!session) throw new Error('Could not log into LOTS 62 after 3 attempts — check the LOTS 62 username/password in GitHub secrets.');
 
   const cookieHeader = session.cookies.map(c => `${c.name}=${c.value}`).join('; ');
-  const u = findUser(session.authState);
+  // the account's store comes from LOTS's own "current member" call (same one the website uses)
+  let u = findUser(session.authState);
+  if(!u.code && !u.storeCode){
+    const tok = session.cookies.find(c => c.name === 'accessToken');
+    const token = tok ? decodeURIComponent(tok.value) : '';
+    for(const path of ['/next-ocs-member/user/profile/currentMember', '/next-ocs-member/user/cart/v2?locale=en_US']){
+      try{
+        const res = await fetch('https://api.lotswholesale.com' + path, {
+          headers: { Authorization: `Bearer ${token}`, Cookie: cookieHeader, Origin: 'https://www.lotswholesale.com', Referer: 'https://www.lotswholesale.com/' },
+        });
+        const text = await res.text();
+        let json = null; try{ json = JSON.parse(text); }catch(e){}
+        const f = json ? findUser(json) : {};
+        log(`  ${path.split('?')[0]} -> HTTP ${res.status}; fields: ${json && typeof json === 'object' ? Object.keys(json.data || json).slice(0, 40).join(', ') : text.slice(0, 120)}`);
+        u = Object.assign({}, f, u);
+        if(u.code || u.storeCode) break;
+      }catch(e){ log(`  ${path} failed: ${e.message}`); }
+    }
+  }
   const store = {
     code: process.env.LOTS62_STORE_CODE || u.code || u.storeCode,
     makroNo: u.makroNo,
