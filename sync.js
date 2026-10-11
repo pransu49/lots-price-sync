@@ -46,7 +46,7 @@ function log(...args){ console.log(new Date().toISOString(), ...args); }
 async function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
 
 // ---------- Step 1: log in and capture an authenticated API context ----------
-async function loginAndGetSession(){
+async function loginAndGetSession(username = LOTS_USERNAME, password = LOTS_PASSWORD){
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({ ignoreHTTPSErrors: true, viewport: { width: 1280, height: 720 } });
   const page = await context.newPage();
@@ -83,7 +83,7 @@ async function loginAndGetSession(){
     const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
     setter.call(input, mobile);
     input.dispatchEvent(new Event('input', { bubbles: true }));
-  }, LOTS_USERNAME);
+  }, username);
   await sleep(400);
   // The "continue" control is a plain <img alt="Next"> — a stable selector,
   // not screen coordinates (which shift between environments/viewports).
@@ -98,7 +98,7 @@ async function loginAndGetSession(){
     const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
     setter.call(input, pwd);
     input.dispatchEvent(new Event('input', { bubbles: true }));
-  }, LOTS_PASSWORD);
+  }, password);
   await sleep(400);
   // The password step submits via a real <button type="submit"> inside the login form.
   await page.click('#login-form button[type=submit]', { timeout: 15000 }).catch(()=>{});
@@ -147,16 +147,19 @@ function walkCategories(node, out, path){
 // Confirmed by testing directly against the API: only the session cookies are
 // needed here. Sending an Authorization header actually causes a 401 — the
 // site's own frontend doesn't send one for this endpoint either.
-async function fetchCategoryProducts(cookieHeader, menuId){
+// store = optional { code, pincode, makroNo } — used by the LOTS 62 sync; LOTS (store 106) by default
+async function fetchCategoryProducts(cookieHeader, menuId, store){
+  store = store || {};
+  const sc = String(store.code || '106');
   const body = {
     menuId,
     locale: 'en_US',
-    assortPriceStoreCode: '106',
-    assortOrderStoreCode: '106',
-    nonAssortPriceStoreCode: '106',
-    nonAssortOrderStoreCode: '106',
-    pincode: '201310',
-    makroNo: '5687000000337166',
+    assortPriceStoreCode: sc,
+    assortOrderStoreCode: sc,
+    nonAssortPriceStoreCode: sc,
+    nonAssortOrderStoreCode: sc,
+    pincode: store.pincode || '201310',
+    makroNo: store.makroNo || '5687000000337166',
     reloadPrice: true,
     loadHierarchy: true,
     countryOfOrigin: null,
@@ -583,7 +586,10 @@ async function sendWhatsApp(message){
   }
 }
 
-main()
+module.exports = { loginAndGetSession, walkCategories, fetchCategoryProducts, buildSlabsFromPricingRecords, sendWhatsApp, log, sleep };
+
+// only run the LOTS sync when this file is started directly (not when lots62-sync.js borrows its helpers)
+if(require.main === module) main()
   .then(async (summary) => {
     await sendWhatsApp(
       `✅ LOTS price sync completed.\n` +
