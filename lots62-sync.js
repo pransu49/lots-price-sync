@@ -12,7 +12,9 @@
  *   LOTS62_STORE_CODE (optional)       only if the store can't be read from the login
  */
 const admin = require('firebase-admin');
-const { loginAndGetSession, walkCategories, fetchCategoryProducts, buildSlabsFromPricingRecords, sendWhatsApp, log, sleep } = require('./sync.js');
+const fs = require('fs');
+const path = require('path');
+const { toPosRecord, writePosCatalog, loginAndGetSession, walkCategories, fetchCategoryProducts, buildSlabsFromPricingRecords, sendWhatsApp, log, sleep } = require('./sync.js');
 
 const USER = process.env.LOTS62_USERNAME;
 const PASS = process.env.LOTS62_PASSWORD;
@@ -110,6 +112,9 @@ async function main(){
   log(`Found ${categories.length} leaf categories to scan.`);
 
   const byCode = new Map();
+  const posRecords = [];
+  let itemMaster = {};
+  try{ itemMaster = JSON.parse(fs.readFileSync(path.join(__dirname, 'lots-item-master.json'), 'utf8')); }catch(e){ log('lots-item-master.json not found — barcode/GST/HSN skipped.'); }
   let incomplete = 0;
   for(const cat of categories){
     let products = [];
@@ -140,6 +145,7 @@ async function main(){
       if(img && typeof img === 'object') img = img.url || img.imageUrl || img.src || null;
       if(typeof img === 'string') out.img = img.startsWith('//') ? 'https:' + img : img;
       byCode.set(code, out);
+      posRecords.push(toPosRecord(p, slabs, itemMaster));
     }
   }
   const products = [...byCode.values()];
@@ -168,6 +174,17 @@ async function main(){
     chunkCount: chunks.length,
   });
   log(`Wrote ${products.length} LOTS 62 products to aikm_admin/lots62Catalog.`);
+
+  // Same catalog for the Sasta Store POS (prices, stock, barcode) — shops/{SHOP_ID}/lots/l62
+  if(process.env.FIREBASE_SERVICE_ACCOUNT && process.env.SHOP_ID){
+    try{
+      const posSa = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+      const posApp = admin.initializeApp({ credential: admin.credential.cert(posSa) }, 'pos62');
+      await writePosCatalog(posApp.firestore(), process.env.SHOP_ID, 'l62', 'LOTS 62', posRecords);
+    }catch(e){ log('POS write for LOTS 62 failed: ' + e.message); }
+  }else{
+    log('POS write for LOTS 62 skipped (FIREBASE_SERVICE_ACCOUNT / SHOP_ID not set).');
+  }
   return products.length;
 }
 

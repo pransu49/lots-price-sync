@@ -25,6 +25,8 @@ jobs:
       - name: Run LOTS 62 sync
         env:
           LOTS62_USERNAME: ${{ secrets.LOTS62_USERNAME }}
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          SHOP_ID: ${{ secrets.SHOP_ID }}
           LOTS62_PASSWORD: ${{ secrets.LOTS62_PASSWORD }}
           LOTS62_STORE_CODE: ${{ secrets.LOTS62_STORE_CODE }}
           AIKM_FIREBASE_SERVICE_ACCOUNT: ${{ secrets.AIKM_FIREBASE_SERVICE_ACCOUNT }}

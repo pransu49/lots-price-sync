@@ -5,7 +5,8 @@
  *  1) Sasta Store Counter Billing (Firestore: shops/{SHOP_ID}/kv/*)
  *     - Only products already in your billing app's catalog (catalog-codes.json)
  *     - tier prices  = exactly what LOTS shows (no markup)
- *     - sale price   = last available tier price x 1.08 (your 8% margin)
+ *     - sale price   = last available tier price + margin (5% up to Rs 20, 8% Rs 20-300, 6% above)
+ *     - ALSO the full LOTS-GN catalog (all products, stock, barcode, GST, HSN) at shops/{SHOP_ID}/lots/gn
  *     This matches the "Sync LOTS Prices" button in the app exactly.
  *
  *  2) AIKM Order Mapper / Admin Console (Firestore: aikm_admin/lotsCatalog)
@@ -44,6 +45,52 @@ const SHOP_ID = process.env.SHOP_ID;
 function log(...args){ console.log(new Date().toISOString(), ...args); }
 
 async function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
+
+// POS sale-price margin, by LOTS cost (last tier):
+//   up to Rs 20 -> 5%,  Rs 20-300 -> 8%,  Rs 300 and above -> 6%
+// Keep this identical to marginFor() in the POS page.
+function marginFor(cost){
+  if(cost <= 20) return 0.05;
+  if(cost <= 300) return 0.08;
+  return 0.06;
+}
+function salePriceFor(cost){ return Math.round(cost * (1 + marginFor(cost)) * 100) / 100; }
+
+// One compact POS record per LOTS product: price tiers (raw LOTS cost), stock, barcode, GST, HSN.
+function toPosRecord(p, slabs, itemMaster){
+  const code = String(p.productCode || '').trim();
+  const r = { c: code, n: p.productName || '', s: slabs };
+  if(p.unit) r.u = p.unit;
+  const mrp = p.pricingRecords && p.pricingRecords[0] ? p.pricingRecords[0].mrp : null;
+  if(mrp != null) r.m = mrp;
+  if(p.stockAvailableToSell != null) r.q = Number(p.stockAvailableToSell);
+  const im = itemMaster && itemMaster[code];
+  if(im){
+    if(im.b) r.b = String(im.b);
+    if(im.g != null) r.g = im.g;
+    if(im.h) r.h = String(im.h);
+  }
+  return r;
+}
+
+// Saves a full LOTS catalog for the POS at shops/{SHOP_ID}/lots/{source} (+ "chunks").
+// The POS page reads this directly — it is NOT copied into each browser's storage,
+// so it can hold every LOTS product without filling the till's browser.
+async function writePosCatalog(db, shopId, source, label, records){
+  const parent = db.collection('shops').doc(shopId).collection('lots').doc(source);
+  const chunksRef = parent.collection('chunks');
+  const CHUNK = 500;
+  const chunks = [];
+  for(let i = 0; i < records.length; i += CHUNK) chunks.push(records.slice(i, i + CHUNK));
+  const batch = db.batch();
+  chunks.forEach((c, i) => batch.set(chunksRef.doc(`chunk_${i}`), { products: c }));
+  await batch.commit();
+  const existing = await chunksRef.listDocuments();
+  const keep = new Set(chunks.map((_, i) => `chunk_${i}`));
+  await Promise.all(existing.filter(d => !keep.has(d.id)).map(d => d.delete()));
+  await parent.set({ label, savedAt: new Date().toISOString(), productCount: records.length, chunkCount: chunks.length });
+  log(`POS: wrote ${records.length} ${label} products to shops/${shopId}/lots/${source}.`);
+}
 
 // ---------- Step 1: log in and capture an authenticated API context ----------
 async function loginAndGetSession(username = LOTS_USERNAME, password = LOTS_PASSWORD){
@@ -271,6 +318,8 @@ async function main(){
   const lotsRawCost = {};
   const listedCodes = new Set();   // every code LOTS listed this run, even ones with no price right now
   let incompleteCats = 0;
+  const posRecords = [];    // full LOTS-GN catalog for the POS (every product, not just known ones)
+  const posSeen = new Set();
   const aikmProducts = []; // full raw catalog for the Order Mapper tool — ALL LOTS products, not just ones in the billing app
   let matchedCount = 0;
 
@@ -336,10 +385,11 @@ async function main(){
         masterHits++;
       }
       aikmProducts.push(aikmProduct);
+      if(!posSeen.has(code)){ posSeen.add(code); posRecords.push(toPosRecord(p, slabs, itemMaster)); }
 
-      // Billing app only wants products it already knows about, marked up.
+      // Old POS pages only use products they already know about (kept until the new POS page is pasted).
       if(catalogCodes.has(code)){
-        const salePrice = Math.round(rawCost * MARGIN * 100) / 100;
+        const salePrice = salePriceFor(rawCost);
         slabOverrides[code] = slabs;               // exactly as LOTS lists them
         priceOverrides[code] = salePrice;           // last tier + margin
         lotsRawCost[code] = rawCost;
@@ -377,6 +427,7 @@ async function main(){
   await kvRef.doc('lots-raw-cost').set({ v: JSON.stringify(lotsRawCost) });
 
   log(`Wrote price-overrides, slab-overrides, lots-raw-cost for ${matchedCount} products to shops/${SHOP_ID}/kv.`);
+  await writePosCatalog(db, SHOP_ID, 'gn', 'LOTS GN', posRecords);
   log('Every open device with Cloud Sync on will pick this up automatically.');
 
   // ---------- Step 6: write to Firestore (AIKM Order Mapper) ----------
@@ -586,7 +637,7 @@ async function sendWhatsApp(message){
   }
 }
 
-module.exports = { loginAndGetSession, walkCategories, fetchCategoryProducts, buildSlabsFromPricingRecords, sendWhatsApp, log, sleep };
+module.exports = { marginFor, salePriceFor, toPosRecord, writePosCatalog, loginAndGetSession, walkCategories, fetchCategoryProducts, buildSlabsFromPricingRecords, sendWhatsApp, log, sleep };
 
 // only run the LOTS sync when this file is started directly (not when lots62-sync.js borrows its helpers)
 if(require.main === module) main()
