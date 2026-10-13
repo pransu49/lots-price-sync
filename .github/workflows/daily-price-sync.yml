@@ -6,6 +6,9 @@ on:
     # Times are UTC: 21:30 UTC = 3:00 AM IST, 06:30 UTC = 12:00 noon IST.
     - cron: '30 21 * * *'
     - cron: '30 6 * * *'
+    # Extra price refresh every 2 hours, 7 AM - 11 PM IST (odd minute = GitHub starts it on time more often).
+    # These runs update the POS only (Admin Console stays on the 2 main runs).
+    - cron: '23 1-17/2 * * *'
   workflow_dispatch: {} # lets you also click "Run workflow" manually on GitHub
 
 # never let two syncs run at the same time (e.g. a late scheduled run + a manual one)
@@ -39,6 +42,7 @@ jobs:
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
           FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
           SHOP_ID: ${{ secrets.SHOP_ID }}
+          POS_ONLY: ${{ github.event.schedule == '23 1-17/2 * * *' && '1' || '' }}
           AIKM_FIREBASE_SERVICE_ACCOUNT: ${{ secrets.AIKM_FIREBASE_SERVICE_ACCOUNT }}
           GREENAPI_INSTANCE_ID: ${{ secrets.GREENAPI_INSTANCE_ID }}
           GREENAPI_API_TOKEN: ${{ secrets.GREENAPI_API_TOKEN }}

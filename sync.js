@@ -438,7 +438,7 @@ async function main(){
   // LOTS's catalog grows in the future — no more guessing at a byte threshold.
   let aikmCount = 0;
   let aikmSkipped = true;
-  if(process.env.AIKM_FIREBASE_SERVICE_ACCOUNT){
+  if(process.env.AIKM_FIREBASE_SERVICE_ACCOUNT && !process.env.POS_ONLY){ // POS_ONLY runs (every 2 h) skip the Admin Console write to save Firebase reads
     aikmSkipped = false;
     const aikmServiceAccount = JSON.parse(process.env.AIKM_FIREBASE_SERVICE_ACCOUNT);
     const aikmApp = admin.initializeApp({
