@@ -59,7 +59,8 @@ function salePriceFor(cost){ return Math.round(cost * (1 + marginFor(cost)) * 10
 // One compact POS record per LOTS product: price tiers (raw LOTS cost), stock, barcode, GST, HSN.
 function toPosRecord(p, slabs, itemMaster){
   const code = String(p.productCode || '').trim();
-  const r = { c: code, n: p.productName || '', s: slabs };
+  // Firebase can't store a list inside a list, so each price tier is saved as { l: label, p: price }.
+  const r = { c: code, n: p.productName || '', s: (slabs || []).map(([l, price]) => ({ l, p: price })) };
   if(p.unit) r.u = p.unit;
   const mrp = p.pricingRecords && p.pricingRecords[0] ? p.pricingRecords[0].mrp : null;
   if(mrp != null) r.m = mrp;
