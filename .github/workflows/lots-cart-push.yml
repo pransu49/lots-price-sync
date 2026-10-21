@@ -45,3 +45,17 @@ jobs:
           LOTS62_PASSWORD: ${{ secrets.LOTS62_PASSWORD }}
           AIKM_FIREBASE_SERVICE_ACCOUNT: ${{ secrets.AIKM_FIREBASE_SERVICE_ACCOUNT }}
         run: node lots-cart-push.js
+
+      - name: Telegram alert if the upload failed
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          [ -n "$TELEGRAM_BOT_TOKEN" ] || exit 0
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+            --data-urlencode "text=🔴 LOTS Smart Cart upload FAILED - the order file did not reach LOTS. Upload it by hand or share the details with Claude.
+
+          Details: ${RUN_URL}" > /dev/null || true

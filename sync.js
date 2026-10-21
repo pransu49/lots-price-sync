@@ -617,7 +617,21 @@ async function main(){
 // links YOUR OWN WhatsApp (via a one-time QR scan) as the sender, so it's
 // not sharing a number with thousands of other users. Setup is in SETUP.md.
 // Skipped entirely if the required env vars aren't set.
+async function sendTelegram(message){
+  const token = process.env.TELEGRAM_BOT_TOKEN, chat = process.env.TELEGRAM_CHAT_ID;
+  if(!token || !chat) return;
+  try{
+    const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chat, text: String(message).slice(0, 4000) + (process.env.GITHUB_RUN_ID ? `\n\nDetails: ${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}` : ''), disable_web_page_preview: true }),
+    });
+    log(`Telegram alert sent (status ${res.status}).`);
+  }catch(e){ log(`Telegram alert failed: ${e.message}`); }
+}
+
 async function sendWhatsApp(message){
+  // Failures also go to Telegram (AIKM_OPS_ALERTS_bot). Success messages stay off Telegram (they run every 2 hours).
+  if(/^❌/.test(String(message))) await sendTelegram(message);
   const instanceId = process.env.GREENAPI_INSTANCE_ID;
   const apiToken = process.env.GREENAPI_API_TOKEN;
   const chatId = process.env.GREENAPI_CHAT_ID; // e.g. 919999999999@c.us
