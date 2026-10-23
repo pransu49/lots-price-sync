@@ -47,7 +47,18 @@ async function pendingDocs() {
 // ---------- LOTS login (same flow as the daily price sync) ----------
 async function loginAndGetToken(creds) {
   const { chromium } = require('playwright');
-  const browser = await chromium.launch({ headless: true });
+  // Fast start: use the Google Chrome already on GitHub's machine (no 5–13 min browser install).
+  // If that fails, install Playwright's own browser once and use it (the old way).
+  let browser;
+  try {
+    browser = await chromium.launch({ headless: true, ...(process.env.PW_CHANNEL ? { channel: process.env.PW_CHANNEL } : {}) });
+  } catch (e) {
+    if (!process.env.PW_CHANNEL) throw e;
+    log(`Preinstalled ${process.env.PW_CHANNEL} did not start (${e.message.split('\n')[0]}) — installing Playwright's browser instead.`);
+    require('child_process').execSync('npx playwright install --with-deps chromium', { stdio: 'inherit' });
+    delete process.env.PW_CHANNEL;
+    browser = await chromium.launch({ headless: true });
+  }
   try {
     const context = await browser.newContext({ ignoreHTTPSErrors: true, viewport: { width: 1280, height: 720 } });
     const page = await context.newPage();

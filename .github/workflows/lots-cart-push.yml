@@ -32,9 +32,15 @@ jobs:
           AIKM_FIREBASE_SERVICE_ACCOUNT: ${{ secrets.AIKM_FIREBASE_SERVICE_ACCOUNT }}
         run: node lots-cart-push.js check
 
-      - name: Install Playwright browser
+      - name: Use preinstalled Chrome (skips the slow browser install)
         if: steps.q.outputs.pending == 'true'
-        run: npx playwright install --with-deps chromium
+        run: |
+          if command -v google-chrome >/dev/null 2>&1; then
+            google-chrome --version
+            echo "PW_CHANNEL=chrome" >> "$GITHUB_ENV"
+          else
+            npx playwright install --with-deps chromium
+          fi
 
       - name: Upload to LOTS Smart Cart
         if: steps.q.outputs.pending == 'true'
