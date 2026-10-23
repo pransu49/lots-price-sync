@@ -300,6 +300,11 @@ async function processDoc(doc) {
       if (cart === null || !lastCartJson) throw new Error('Could not read your LOTS cart. Please try again.');
       const raw = cartLinesRaw(lastCartJson);
       const cartLines = Object.values(raw).map(lineInfo).filter((l) => l.qty > 0);
+      // "Save my final cart" on an order batch with an EMPTY cart = the order was already placed on LOTS.
+      // Don't save it — an empty read would wipe that batch from the Picking List PDF / Excel.
+      if (req.refreshOf && !cartLines.length) {
+        throw new Error('Your LOTS cart is empty, so nothing was saved — your batch is kept as it was. Next time, click "Save my final cart" BEFORE placing the order on LOTS.');
+      }
       const first = Object.values(raw)[0];
       const cartSample = first ? JSON.stringify(first).slice(0, 3000) : null;
       const cartTotals = cartSummary(lastCartJson);
@@ -347,6 +352,23 @@ async function processDoc(doc) {
     if (before === null) {
       throw new Error('Could not read your LOTS cart, so nothing was uploaded. Please try again.');
     } else if (before.length) {
+      // Safety net: next batch sent while the previous batch is still in the cart (maybe edited by you).
+      // Save that cart as the previous batch's final cart BEFORE clearing, so your edits are never lost.
+      if (batchNo > 1 && req.batchOf && lastCartJson) {
+        try {
+          const prevLines = Object.values(cartLinesRaw(lastCartJson)).map(lineInfo).filter((l) => l.qty > 0);
+          if (prevLines.length) {
+            await db.collection(QUEUE).add({
+              status: 'done', type: 'readCart', auto: true, vendor: req.vendor || 'LOTS', store: req.store || 'lots', items: [], sentCount: 0,
+              batchOf: req.batchOf, batchNo: batchNo - 1, batchTotal, refreshOf: req.batchOf, remainingItems: [], remainingCount: 0,
+              cartLines: prevLines, cartTotals: cartSummary(lastCartJson), cartProductCount: before.length, cartReadAtMs: Date.now(),
+              createdAtMs: (Number(req.createdAtMs) || Date.now()) - 1, // older than this batch, so the console keeps showing this batch
+              createdAt: admin.firestore.FieldValue.serverTimestamp(), finishedAt: admin.firestore.FieldValue.serverTimestamp(),
+            });
+            log(`Saved the cart left from batch ${batchNo - 1} (${prevLines.length} products, with your edits) before clearing it.`);
+          }
+        } catch (e) { log(`Could not save the batch ${batchNo - 1} cart before clearing: ${e.message}`); }
+      }
       await ref.update({ progress: `Clearing ${before.length} old products from your LOTS cart…` });
       // LOTS sometimes times out (HTTP 504) while clearing — retry, and check if it actually cleared anyway
       let after = null;
