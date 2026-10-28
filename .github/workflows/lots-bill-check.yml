@@ -1,0 +1,62 @@
+name: LOTS-GN Bill Check
+
+on:
+  schedule:
+    # every 20 min, 10:00 AM – 3:40 PM IST (LOTS uploads bills 10 AM – 2 PM)
+    - cron: '*/20 4-10 * * *'
+  push:
+    branches: [main]
+    paths: ['lots-bill-check.js', '.github/workflows/lots-bill-check.yml']   # runs once right after an update
+  workflow_dispatch:
+    inputs:
+      bill:
+        description: 'Re-check one bill now (e.g. 1061027IN/005527). Leave empty for a normal run.'
+        required: false
+        default: ''
+
+concurrency:
+  group: lots-bill-check
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Only inside the bill window (10 AM – 4 PM IST) unless started by hand
+        id: gate
+        run: |
+          H=$(TZ=Asia/Kolkata date +%H)
+          if [ "${{ github.event_name }}" != "schedule" ] || { [ "$H" -ge 10 ] && [ "$H" -lt 16 ]; }; then echo "go=true" >> "$GITHUB_OUTPUT"; else echo "Outside 10 AM–4 PM IST - skipping."; fi
+
+      - uses: actions/checkout@v4
+        if: steps.gate.outputs.go == 'true'
+
+      - uses: actions/setup-node@v4
+        if: steps.gate.outputs.go == 'true'
+        with:
+          node-version: '20'
+
+      - name: Install (no browser needed)
+        if: steps.gate.outputs.go == 'true'
+        run: npm install --no-save --ignore-scripts firebase-admin@12 pdfjs-dist@3.11.174 pdf-lib@1.17.1
+
+      - name: Compare today's LOTS-GN bill with the ordered cart
+        if: steps.gate.outputs.go == 'true'
+        env:
+          AIKM_FIREBASE_SERVICE_ACCOUNT: ${{ secrets.AIKM_FIREBASE_SERVICE_ACCOUNT }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: node lots-bill-check.js "${{ github.event.inputs.bill }}"
+
+      - name: Telegram alert if the check crashed
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          [ -n "$TELEGRAM_BOT_TOKEN" ] || exit 0
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            --data-urlencode "chat_id=${TELEGRAM_CHAT_ID}" \
+            --data-urlencode "text=🔴 LOTS-GN bill check robot failed. Details: ${RUN_URL}" > /dev/null || true
