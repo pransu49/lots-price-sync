@@ -9,9 +9,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const seen = [];
   page.on('response', async (res) => {
     const u = res.url();
-    if (!/lotswholesale\.com/.test(u) || /\.(js|css|png|jpe?g|svg|webp|woff2?|ico)(\?|$)/i.test(u)) return;
+    if (!/api\.lotswholesale\.com|apex/.test(u) || /\.(js|css|png|jpe?g|svg|webp|woff2?|ico)(\?|$)/i.test(u)) return;
     if (/cart|catalog|search|banner|category|menu|cms|config|translation/i.test(u) && !/order|invoice|bill/i.test(u)) return;
-    let body = ''; try { body = (await res.text()).slice(0, 1500); } catch (e) {}
+    let body = ''; try { body = (await res.text()).slice(0, 5000); } catch (e) {}
     seen.push(u); console.log(`\n### ${res.request().method()} ${res.status()} ${u}\n${body}`);
   });
   await page.goto('https://www.lotswholesale.com/', { waitUntil: 'domcontentloaded', timeout: 60000 });
@@ -28,15 +28,18 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   console.log('\n=== LOGGED IN. Links mentioning order/invoice/bill/account:');
   const links = await page.evaluate(() => [...document.querySelectorAll('a')].map((a) => `${(a.innerText || '').trim().slice(0, 40)} -> ${a.href}`).filter((s) => /order|invoice|bill|account|profile|purchase/i.test(s)));
   console.log(links.join('\n'));
-  for (const p of ['/myorders', '/my-orders', '/orders', '/account/orders', '/myaccount', '/profile', '/order-history', '/invoices']) {
-    console.log(`\n=== VISIT ${p}`);
-    await page.goto('https://www.lotswholesale.com' + p, { waitUntil: 'domcontentloaded', timeout: 45000 }).catch((e) => console.log('nav err', e.message));
-    await sleep(6000);
-    const txt = await page.evaluate(() => document.body.innerText.slice(0, 1200)).catch(() => '');
-    console.log('URL now:', page.url(), '\nTEXT:', txt.replace(/\n+/g, ' | '));
-    const l2 = await page.evaluate(() => [...document.querySelectorAll('a,button')].map((a) => `${(a.innerText || '').trim().slice(0, 40)} -> ${a.href || ''}`).filter((s) => /order|invoice|bill|download|detail/i.test(s)).slice(0, 30));
-    console.log('LINKS:', l2.join(' || '));
-  }
+  await page.goto('https://www.lotswholesale.com/profile', { waitUntil: 'domcontentloaded', timeout: 45000 }); await sleep(5000);
+  const clickText = async (re) => page.evaluate((src) => { const r = new RegExp(src, 'i'); const el = [...document.querySelectorAll('a,button,li,div,span')].filter((e) => r.test((e.innerText || '').trim()) && (e.innerText || '').trim().length < 40 && e.getBoundingClientRect().width > 0).pop(); if (el) { el.click(); return el.outerHTML.slice(0, 200); } return null; }, re.source);
+  console.log('\n=== CLICK Order History:', await clickText(/^Order History$/)); await sleep(7000);
+  console.log('URL:', page.url(), '\nTEXT:', (await page.evaluate(() => document.body.innerText)).replace(/\n+/g, ' | ').slice(0, 3000));
+  const btns = await page.evaluate(() => [...document.querySelectorAll('a,button')].map((a) => `${(a.innerText || '').trim().slice(0, 40)} -> ${a.href || ''}`).filter((s) => /order|invoice|bill|download|detail|view|pdf/i.test(s)).slice(0, 40));
+  console.log('BUTTONS:', btns.join(' || '));
+  console.log('\n=== CLICK first details/view:', await clickText(/^(view|details|view details|order details|invoice|download invoice)$/)); await sleep(7000);
+  console.log('URL:', page.url(), '\nTEXT:', (await page.evaluate(() => document.body.innerText)).replace(/\n+/g, ' | ').slice(0, 3000));
+  console.log('BUTTONS2:', (await page.evaluate(() => [...document.querySelectorAll('a,button')].map((a) => `${(a.innerText || '').trim().slice(0, 40)} -> ${a.href || ''}`).filter((s) => /invoice|bill|download|pdf/i.test(s)).slice(0, 40))).join(' || '));
+  await page.goto('https://www.lotswholesale.com/profile', { waitUntil: 'domcontentloaded', timeout: 45000 }); await sleep(5000);
+  console.log('\n=== CLICK Tax Invoice Information:', await clickText(/^Tax Invoice Information$/)); await sleep(6000);
+  console.log('TEXT:', (await page.evaluate(() => document.body.innerText)).replace(/\n+/g, ' | ').slice(0, 1500));
   console.log('\n=== API URLS SEEN:\n' + [...new Set(seen)].join('\n'));
   await browser.close();
 })().catch((e) => { console.error(e); process.exit(1); });
