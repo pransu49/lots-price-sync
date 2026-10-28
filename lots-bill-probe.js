@@ -34,12 +34,10 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   console.log('URL:', page.url(), '\nTEXT:', (await page.evaluate(() => document.body.innerText)).replace(/\n+/g, ' | ').slice(0, 3000));
   const btns = await page.evaluate(() => [...document.querySelectorAll('a,button')].map((a) => `${(a.innerText || '').trim().slice(0, 40)} -> ${a.href || ''}`).filter((s) => /order|invoice|bill|download|detail|view|pdf/i.test(s)).slice(0, 40));
   console.log('BUTTONS:', btns.join(' || '));
-  console.log('\n=== CLICK first details/view:', await clickText(/^(view|details|view details|order details|invoice|download invoice)$/)); await sleep(7000);
-  console.log('URL:', page.url(), '\nTEXT:', (await page.evaluate(() => document.body.innerText)).replace(/\n+/g, ' | ').slice(0, 3000));
-  console.log('BUTTONS2:', (await page.evaluate(() => [...document.querySelectorAll('a,button')].map((a) => `${(a.innerText || '').trim().slice(0, 40)} -> ${a.href || ''}`).filter((s) => /invoice|bill|download|pdf/i.test(s)).slice(0, 40))).join(' || '));
-  await page.goto('https://www.lotswholesale.com/profile', { waitUntil: 'domcontentloaded', timeout: 45000 }); await sleep(5000);
-  console.log('\n=== CLICK Tax Invoice Information:', await clickText(/^Tax Invoice Information$/)); await sleep(6000);
-  console.log('TEXT:', (await page.evaluate(() => document.body.innerText)).replace(/\n+/g, ' | ').slice(0, 1500));
+  for (const t of [/^Delivered$/, /^Year 2026$/, /^Ongoing$/, /^Cancelled$/]) {
+    console.log('\n=== CLICK', t, await clickText(t)); await sleep(6000);
+    console.log('TEXT:', (await page.evaluate(() => document.body.innerText)).replace(/\n+/g, ' | ').slice(380, 1400));
+  }
   console.log('\n=== API URLS SEEN:\n' + [...new Set(seen)].join('\n'));
   await browser.close();
 })().catch((e) => { console.error(e); process.exit(1); });
