@@ -11,39 +11,38 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  push:
+  # 1) quick check on GitHub (does not touch LOTS)
+  check:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 5
+    outputs:
+      pending: ${{ steps.q.outputs.pending }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Node
-        uses: actions/setup-node@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: '20'
-
-      - name: Install dependencies
-        run: npm install
-
+      - run: npm install
       - name: Check for orders waiting
         id: q
         env:
           AIKM_FIREBASE_SERVICE_ACCOUNT: ${{ secrets.AIKM_FIREBASE_SERVICE_ACCOUNT }}
         run: node lots-cart-push.js check
 
-      - name: Use preinstalled Chrome (skips the slow browser install)
-        if: steps.q.outputs.pending == 'true'
-        run: |
-          if command -v google-chrome >/dev/null 2>&1; then
-            google-chrome --version
-            echo "PW_CHANNEL=chrome" >> "$GITHUB_ENV"
-          else
-            npx playwright install --with-deps chromium
-          fi
-
+  # 2) the actual LOTS upload runs on the office computer (LOTS blocks cloud servers since 30 Oct 2026)
+  push:
+    needs: check
+    if: needs.check.outputs.pending == 'true'
+    runs-on: [self-hosted, windows, lots-office]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - run: npm install
+      - run: npx playwright install chromium
       - name: Upload to LOTS Smart Cart
-        if: steps.q.outputs.pending == 'true'
         env:
           LOTS_USERNAME: ${{ secrets.LOTS_USERNAME }}
           LOTS_PASSWORD: ${{ secrets.LOTS_PASSWORD }}
@@ -52,9 +51,13 @@ jobs:
           AIKM_FIREBASE_SERVICE_ACCOUNT: ${{ secrets.AIKM_FIREBASE_SERVICE_ACCOUNT }}
         run: node lots-cart-push.js
 
-      - name: Telegram alert if the upload failed
-        if: failure()
-        env:
+  # 3) Telegram alert if the upload failed
+  alert:
+    needs: push
+    if: failure()
+    runs-on: ubuntu-latest
+    steps:
+      - env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

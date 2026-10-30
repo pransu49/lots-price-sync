@@ -18,7 +18,8 @@ concurrency:
 
 jobs:
   sync:
-    runs-on: ubuntu-latest
+    # LOTS blocks cloud servers (since 30 Oct 2026), so this runs on the office computer
+    runs-on: [self-hosted, windows, lots-office]
     timeout-minutes: 60
     steps:
       - name: Checkout
@@ -33,7 +34,7 @@ jobs:
         run: npm install
 
       - name: Install Playwright browser
-        run: npx playwright install --with-deps chromium
+        run: npx playwright install chromium
 
       - name: Run price sync
         env:

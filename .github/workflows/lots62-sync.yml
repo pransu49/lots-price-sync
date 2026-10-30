@@ -15,7 +15,8 @@ concurrency:
 
 jobs:
   sync:
-    runs-on: ubuntu-latest
+    # LOTS blocks cloud servers (since 30 Oct 2026), so this runs on the office computer
+    runs-on: [self-hosted, windows, lots-office]
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -23,7 +24,7 @@ jobs:
         with:
           node-version: '20'
       - run: npm install
-      - run: npx playwright install --with-deps chromium
+      - run: npx playwright install chromium
       - name: Run LOTS 62 sync
         env:
           LOTS62_USERNAME: ${{ secrets.LOTS62_USERNAME }}
