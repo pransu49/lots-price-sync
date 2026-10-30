@@ -3,13 +3,10 @@ on: { workflow_dispatch: {} }
 jobs:
   probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with: { node-version: '20' }
-      - run: npm install
-      - run: node lots-login-probe.js
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with: { name: probe, path: 'probe-*.png' }
+      - run: |
+          curl -s https://ipinfo.io/json | grep -E '"(ip|city|country|org)"'
+          for u in https://www.lotswholesale.com/ https://api.lotswholesale.com/ https://lotswholesale.com/; do
+            echo "== $u"; curl -s -m 20 -o /tmp/b -w "HTTP %{http_code}\n" -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129 Safari/537.36" "$u"; head -c 200 /tmp/b; echo
+          done
