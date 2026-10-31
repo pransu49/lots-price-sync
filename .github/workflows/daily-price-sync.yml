@@ -20,6 +20,9 @@ jobs:
   sync:
     # LOTS blocks cloud servers (since 30 Oct 2026), so this runs on the office computer
     runs-on: [self-hosted, windows, lots-office]
+    defaults:
+      run:
+        shell: cmd  # Windows blocks PowerShell scripts on the office PC
     timeout-minutes: 60
     steps:
       - name: Checkout

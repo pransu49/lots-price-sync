@@ -34,6 +34,9 @@ jobs:
     needs: check
     if: needs.check.outputs.pending == 'true'
     runs-on: [self-hosted, windows, lots-office]
+    defaults:
+      run:
+        shell: cmd  # Windows blocks PowerShell scripts on the office PC
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
