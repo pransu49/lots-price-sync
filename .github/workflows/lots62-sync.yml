@@ -2,11 +2,10 @@ name: LOTS 62 Price Sync
 
 on:
   schedule:
-    # Same times as the LOTS sync, 15 min later: 3:15 AM and 12:15 PM IST
-    - cron: '45 21 * * *'
+    # 15 min after the LOTS sync: ~7:15 AM, 12:15 PM, 4:15 PM, 9:15 PM IST
+    - cron: '45 1 * * *'
     - cron: '45 6 * * *'
-    # Extra price refresh every 2 hours, 7 AM - 11 PM IST
-    - cron: '29 1-17/2 * * *'
+    - cron: '38 10,15 * * *'
   workflow_dispatch: {}
 
 concurrency:

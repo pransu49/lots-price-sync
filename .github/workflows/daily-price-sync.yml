@@ -2,13 +2,12 @@ name: Daily LOTS Price Sync
 
 on:
   schedule:
-    # GitHub often starts scheduled jobs 1-3 hours late, so the sync runs twice a day.
-    # Times are UTC: 21:30 UTC = 3:00 AM IST, 06:30 UTC = 12:00 noon IST.
-    - cron: '30 21 * * *'
+    # 4 times a day (IST): 7 AM + 12 noon full sync, 4 PM + 9 PM price refresh for the POS.
+    # Kept low on purpose: LOTS blocks robots that read the catalog too often.
+    # Times are UTC: 01:30 = 7 AM IST, 06:30 = 12 noon, 10:23 = ~4 PM, 15:23 = ~9 PM.
+    - cron: '30 1 * * *'
     - cron: '30 6 * * *'
-    # Extra price refresh every 2 hours, 7 AM - 11 PM IST (odd minute = GitHub starts it on time more often).
-    # These runs update the POS only (Admin Console stays on the 2 main runs).
-    - cron: '23 1-17/2 * * *'
+    - cron: '23 10,15 * * *'
   workflow_dispatch: {} # lets you also click "Run workflow" manually on GitHub
 
 # never let two syncs run at the same time (e.g. a late scheduled run + a manual one)
@@ -46,7 +45,7 @@ jobs:
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
           FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
           SHOP_ID: ${{ secrets.SHOP_ID }}
-          POS_ONLY: ${{ github.event.schedule == '23 1-17/2 * * *' && '1' || '' }}
+          POS_ONLY: ${{ github.event.schedule == '23 10,15 * * *' && '1' || '' }}
           AIKM_FIREBASE_SERVICE_ACCOUNT: ${{ secrets.AIKM_FIREBASE_SERVICE_ACCOUNT }}
           GREENAPI_INSTANCE_ID: ${{ secrets.GREENAPI_INSTANCE_ID }}
           GREENAPI_API_TOKEN: ${{ secrets.GREENAPI_API_TOKEN }}
