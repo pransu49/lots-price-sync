@@ -370,14 +370,25 @@ async function processDoc(doc) {
         } catch (e) { log(`Could not save the batch ${batchNo - 1} cart before clearing: ${e.message}`); }
       }
       await ref.update({ progress: `Clearing ${before.length} old products from your LOTS cart…` });
-      // LOTS sometimes times out (HTTP 504) while clearing — retry, and check if it actually cleared anyway
-      let after = null;
-      for (let t = 1; t <= 4; t++) {
-        try { await clearCart(session); } catch (e) { log(`Clear attempt ${t} failed: ${e.message}`); }
-        await sleep(3000 * t);
+      // LOTS often times out (HTTP 504) on a big cart but KEEPS clearing on its side, and its cart
+      // answers HTTP 500 until that finishes. So: ask once, then wait and check every 10 sec
+      // (up to 5 min) instead of asking again — repeat requests only slowed LOTS down further.
+      let after = null, calls = 0;
+      const clearStart = Date.now();
+      try { calls++; await clearCart(session); } catch (e) { log(`Clear request failed: ${e.message} — waiting for LOTS to finish clearing.`); }
+      while (Date.now() - clearStart < 5 * 60000) {
         after = await readCart(session).catch(() => null);
         if (after && !after.length) break;
-        log(`Cart not empty yet after clear attempt ${t} (${after ? after.length : '?'} products).`);
+        const secs = Math.round((Date.now() - clearStart) / 1000);
+        if (after && after.length && calls < 3) {
+          // LOTS answered and items are really still there: ask again (max 3 times in total)
+          log(`Cart still has ${after.length} products after ${secs}s — asking LOTS to clear again.`);
+          try { calls++; await clearCart(session); } catch (e) { log(`Clear request ${calls} failed: ${e.message}`); }
+        } else {
+          log(`LOTS still clearing (${after ? after.length + ' products left' : 'cart busy'}) after ${secs}s — waiting.`);
+        }
+        await ref.update({ progress: `LOTS is clearing your old cart (${before.length} products) — ${secs}s so far, waiting…` }).catch(() => {});
+        await sleep(10000);
       }
       if (after === null || after.length) {
         throw new Error(`Could not empty your LOTS cart (${after ? after.length : '?'} products still there), so nothing was uploaded. Clear it on LOTS and try again.`);
