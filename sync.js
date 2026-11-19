@@ -249,14 +249,26 @@ async function fetchCategoryProducts(cookieHeader, menuId, store){
 }
 
 // ---------- Step 3 & 4: keep only known products, compute margin pricing ----------
+// LOTS sometimes sends quantities as decimals ("1.0"), text, or leaves them empty —
+// always turn them into clean whole numbers so every slab label is "N+", "N-M" or "N".
+let oddSlabLogged = false;
 function buildSlabsFromPricingRecords(records){
   if(!records || !records.length) return [];
-  return records.map(r => {
-    const label = (r.toQuantity == null || r.toQuantity >= 9999)
-      ? `${r.fromQuantity}+`
-      : `${r.fromQuantity}-${r.toQuantity}`;
-    return [label, Math.round(r.sellingPrice * 100) / 100];
-  });
+  const num = (v) => { const n = Number(String(v == null ? '' : v).replace(/[^0-9.]/g, '')); return String(v == null ? '' : v).trim() !== '' && Number.isFinite(n) ? Math.round(n) : null; };
+  const out = [];
+  for(const r of records){
+    const price = Number(r && r.sellingPrice);
+    if(!r || !Number.isFinite(price)) continue;
+    let from = num(r.fromQuantity), to = num(r.toQuantity);
+    if((from == null || to === undefined) && !oddSlabLogged){
+      oddSlabLogged = true;
+      console.log('Note: LOTS sent an unusual price slab, using a safe default:', JSON.stringify({ fromQuantity: r.fromQuantity, toQuantity: r.toQuantity }));
+    }
+    if(from == null || from < 1) from = 1;
+    const label = (to == null || to >= 9999 || to < from) ? `${from}+` : `${from}-${to}`;
+    out.push([label, Math.round(price * 100) / 100]);
+  }
+  return out;
 }
 
 async function main(){
@@ -348,8 +360,9 @@ async function main(){
       const aikmSlabs = slabs.map(([label, price]) => {
         const m = label.match(/^(\d+)\+$/) || label.match(/^(\d+)-(\d+)$/) || label.match(/^(\d+)$/);
         let min, max;
-        if(label.endsWith('+')){ min = parseInt(m[1],10); max = Infinity; }
-        else if(m && m[2] !== undefined){ min = parseInt(m[1],10); max = parseInt(m[2],10); }
+        if(!m){ min = 1; max = Infinity; }            // never crash the whole sync on one odd slab
+        else if(label.endsWith('+')){ min = parseInt(m[1],10); max = Infinity; }
+        else if(m[2] !== undefined){ min = parseInt(m[1],10); max = parseInt(m[2],10); }
         else { min = parseInt(m[1],10); max = min; }
         return { min, max, price };
       });
