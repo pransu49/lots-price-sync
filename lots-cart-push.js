@@ -254,7 +254,30 @@ async function uploadPart(session, items, fileName) {
   const { res, text, json } = await lotsFetch(session, '/next-ocs-member/user/cart/uploadExcel', { method: 'POST', body: fd });
   log(`Upload response (HTTP ${res.status}): ${text.slice(0, 1500)}`);
   if (!res.ok || !json) throw new Error(`LOTS rejected the upload (HTTP ${res.status}): ${text.slice(0, 200)}`);
-  return { failed: collectFailed(json), cart: collectCart(json), raw: text.slice(0, 1500) };
+  return { ok: json.success !== false, error: json.error || (json.errors || []).join('; '), failed: collectFailed(json), cart: collectCart(json), raw: text.slice(0, 1500) };
+}
+
+// LOTS rejects a WHOLE file ("Failed to add items to cart") when even one product in it is a
+// problem. When that happens, split the file in half and try again, until the problem
+// product(s) are found — so all the good products still reach the cart.
+async function uploadWithSplit(session, items, fileName, budget) {
+  const r = await uploadPart(session, items, fileName);
+  if (r.ok) return r;
+  if (items.length === 1 || budget.left <= 0) {
+    log(`  LOTS refused ${items.length} product(s) (${r.error || 'no reason given'}): ${items.map((i) => i.code).join(', ')}`);
+    return { ok: false, cart: r.cart, raw: r.raw, failed: items.map((i) => ({ code: i.code, reason: 'LOTS refused this product: ' + (r.error || 'no reason given').replace(/: null$/, '') + ' (out of stock, not sold in your store, or quantity limit)' })) };
+  }
+  const half = Math.ceil(items.length / 2);
+  log(`  LOTS refused the whole file of ${items.length} — splitting into ${half} + ${items.length - half} to find the problem product…`);
+  const out = { ok: true, failed: [], cart: [], raw: r.raw };
+  for (const [k, part] of [[1, items.slice(0, half)], [2, items.slice(half)]]) {
+    budget.left--;
+    await sleep(1500);
+    const sub = await uploadWithSplit(session, part, fileName.replace('.xlsx', `_${k}.xlsx`), budget);
+    out.failed.push(...sub.failed);
+    if (sub.cart && sub.cart.length) out.cart = sub.cart;
+  }
+  return out;
 }
 
 // Empties the LOTS cart (same call as the cart page's "Clear cart")
@@ -407,7 +430,7 @@ async function processDoc(doc) {
     for (let p = 0; p < parts.length; p++) {
       const label = `Part ${p + 1} of ${parts.length}`;
       await ref.update({ progress: `Uploading ${label}…` });
-      const r = await uploadPart(session, parts[p], `smart_cart_part${p + 1}.xlsx`);
+      const r = await uploadWithSplit(session, parts[p], `smart_cart_part${p + 1}.xlsx`, { left: 40 });
       lastCart = r.cart;
       if (p === 0) firstRaw = r.raw;
       results.push({ part: p + 1, sent: parts[p].length, failed: r.failed.length });
