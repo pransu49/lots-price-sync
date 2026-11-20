@@ -39,6 +39,53 @@ function initDb() {
   return (db = app.firestore());
 }
 
+// ---------- Best price slab (owner 20 Nov 2026) ----------
+// LOTS gives a lower price for bigger quantities (slabs). If the cheapest slab needs more units than the order,
+// the robot adds that slab's minimum quantity instead, so every product is bought at the best price.
+// Not done when LOTS' stock (last price sync) is lower than that quantity, or when the extra units would cost
+// more than SLAB_MAX_EXTRA_RS (default Rs 2,000) for one product. Catalogue: ~20 reads per cart request.
+const SLAB_MAX_EXTRA_RS = Number(process.env.SLAB_MAX_EXTRA_RS || 2000);
+const catCache = {};
+async function loadCatalog(store) {
+  const key = store === 'lots62' ? 'lots62Catalog' : 'lotsCatalog';
+  if (catCache[key]) return catCache[key];
+  const snap = await db.collection('aikm_admin').doc(key).collection('chunks').get();
+  const by = {};
+  snap.docs.forEach((d) => ((d.data() || {}).products || []).forEach((p) => { if (p && p.code != null) by[norm(p.code)] = p; }));
+  return (catCache[key] = by);
+}
+function bestSlab(p) {
+  let b = null;
+  ((p && p.slabs) || []).forEach((x) => {
+    const pr = Number(x.price), mn = Number(x.min) || 1;
+    if (!(pr > 0)) return;
+    if (!b || pr < b.price || (pr === b.price && mn < b.min)) b = { price: pr, min: mn };
+  });
+  return b;
+}
+function priceAt(p, q) {
+  let hit = null;
+  ((p && p.slabs) || []).forEach((x) => { const mx = x.max == null ? Infinity : Number(x.max); if (q >= Number(x.min) && q <= mx) hit = Number(x.price); });
+  return hit;
+}
+async function applyBestSlab(items, store) {
+  let by;
+  try { by = await loadCatalog(store); } catch (e) { log('Best slab: could not read the LOTS price list -', e.message); return []; }
+  const bumps = [];
+  items.forEach((it) => {
+    const p = by[norm(it.code)], b = bestSlab(p);
+    if (!b || b.min <= it.qty) return;
+    const stock = p.qty != null ? Number(p.qty) : null;
+    if (stock != null && stock < b.min) return;
+    const now = priceAt(p, it.qty) || b.price;
+    if (b.min * b.price - it.qty * now > SLAB_MAX_EXTRA_RS) return;
+    bumps.push({ code: it.code, name: it.name || p.name || '', from: it.qty, to: b.min, price: now, best: b.price });
+    it.qty = b.min;
+  });
+  if (bumps.length) log(`Best slab: ${bumps.length} products raised to the cheapest slab qty (` + bumps.slice(0, 8).map((x) => `${x.code} ${x.from}->${x.to} @${x.best}`).join(', ') + ')');
+  return bumps;
+}
+
 async function pendingDocs() {
   const snap = await db.collection(QUEUE).where('status', '==', 'pending').get();
   return snap.docs.sort((a, b) => (a.data().createdAtMs || 0) - (b.data().createdAtMs || 0));
@@ -353,6 +400,7 @@ async function processDoc(doc) {
     else merged.set(k, { code: String(it.code).trim(), name: it.name || '', qty: Number(it.qty) });
   });
   const allItems = Array.from(merged.values());
+  const slabBumps = await applyBestSlab(allItems, req.store);
   // batches: only the first 160 go into the cart now; the rest are saved on the request for the next batch
   const items = allItems.slice(0, MAX_CART);
   const remainingItems = allItems.slice(MAX_CART);
@@ -484,6 +532,7 @@ async function processDoc(doc) {
       sentCount: items.length,
       addedCount,
       duplicatesMerged,
+      slabBumps,
       failedItems: attention,
       cartProductCount: lastCart.length,
       cartLines,
