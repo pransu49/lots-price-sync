@@ -44,7 +44,8 @@ function initDb() {
 // the robot adds that slab's minimum quantity instead, so every product is bought at the best price.
 // Not done when LOTS' stock (last price sync) is lower than that quantity, or when the extra units would cost
 // more than SLAB_MAX_EXTRA_RS (default Rs 2,000) for one product. Catalogue: ~20 reads per cart request.
-const SLAB_MAX_EXTRA_RS = Number(process.env.SLAB_MAX_EXTRA_RS || 2000);
+// owner 22 Nov 2026: NO money limit - always the best price slab LOTS has stock for (set env SLAB_MAX_EXTRA_RS to bring a limit back)
+const SLAB_MAX_EXTRA_RS = process.env.SLAB_MAX_EXTRA_RS ? Number(process.env.SLAB_MAX_EXTRA_RS) : Infinity;
 const catCache = {};
 async function loadCatalog(store) {
   const key = store === 'lots62' ? 'lots62Catalog' : 'lotsCatalog';
