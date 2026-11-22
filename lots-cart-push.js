@@ -73,14 +73,25 @@ async function applyBestSlab(items, store) {
   try { by = await loadCatalog(store); } catch (e) { log('Best slab: could not read the LOTS price list -', e.message); return []; }
   const bumps = [];
   items.forEach((it) => {
-    const p = by[norm(it.code)], b = bestSlab(p);
-    if (!b || b.min <= it.qty) return;
+    const p = by[norm(it.code)];
+    if (!p || !p.slabs || !p.slabs.length) return;
     const stock = p.qty != null ? Number(p.qty) : null;
-    if (stock != null && stock < b.min) return;
-    const now = priceAt(p, it.qty) || b.price;
-    if (b.min * b.price - it.qty * now > SLAB_MAX_EXTRA_RS) return;
-    bumps.push({ code: it.code, name: it.name || p.name || '', from: it.qty, to: b.min, price: now, best: b.price });
-    it.qty = b.min;
+    const now = priceAt(p, it.qty) || (bestSlab(p) || {}).price;
+    if (!now) return;
+    // cheapest slab that LOTS has stock for and whose extra units cost at most SLAB_MAX_EXTRA_RS
+    // (owner 22 Nov 2026: if the last slab is too big, take the next-best slab instead of the order qty)
+    let pick = null;
+    p.slabs.forEach((x) => {
+      const pr = Number(x.price), mn = Number(x.min) || 1;
+      if (!(pr > 0) || mn <= it.qty || pr >= now) return;
+      if (stock != null && stock < mn) return;
+      if (mn * pr - it.qty * now > SLAB_MAX_EXTRA_RS) return;
+      if (!pick || pr < pick.price || (pr === pick.price && mn < pick.min)) pick = { price: pr, min: mn };
+    });
+    if (!pick) return;
+    const b = bestSlab(p);
+    bumps.push({ code: it.code, name: it.name || p.name || '', from: it.qty, to: pick.min, price: now, best: pick.price, last: !b || pick.price <= b.price });
+    it.qty = pick.min;
   });
   if (bumps.length) log(`Best slab: ${bumps.length} products raised to the cheapest slab qty (` + bumps.slice(0, 8).map((x) => `${x.code} ${x.from}->${x.to} @${x.best}`).join(', ') + ')');
   return bumps;
