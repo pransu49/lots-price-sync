@@ -1,0 +1,19 @@
+name: Office Robot Heartbeat
+# A tiny "I'm alive" job for the office computer every 30 min (8:30 AM – 12 AM IST).
+# If it sits waiting, the office robot is offline — the watcher (oms-sync repo) sends a Telegram alert.
+on:
+  schedule:
+    - cron: '7,37 3-18 * * *'
+  workflow_dispatch: {}
+concurrency:
+  group: office-heartbeat
+  cancel-in-progress: true
+jobs:
+  alive:
+    runs-on: [self-hosted, windows, lots-office]
+    timeout-minutes: 5
+    defaults:
+      run:
+        shell: cmd
+    steps:
+      - run: echo Office robot is online
